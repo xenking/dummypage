@@ -1,0 +1,101 @@
+html,
+body {
+    display: flex;
+    align-self: center;
+    justify-content: center;
+    align-content: center;
+    flex: 1 0 auto;
+    font-family: 'Roboto Mono', monospace;
+    background: #212121;
+    height: 100%;
+    -ms-text-size-adjust: 100%;
+    -webkit-text-size-adjust: 100%;
+}
+
+.container {
+    height: 100%;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    display: flex;
+}
+
+.text {
+    font-weight: 100;
+    font-size: 3rem;
+    color: #fafafa;
+}
+
+.dud {
+    color: #757575;
+}
+
+.mail {
+    margin-top: 1em;
+    font-size: 2em;
+    color: #fafafa;
+}
+
+a,
+a.infos {
+    background: 0 0;
+    color: #fafafa;
+    text-decoration: none;
+}
+
+a.infos {
+    border-bottom: none !important;
+    font-size: 3rem;
+    display: inline-block;
+    /*flex-grow: 1;*/
+    /*margin:2rem 0 0 2rem;*/
+    /*height:100px;*/
+    /*width: calc(100% * (1/4) - 1px)*/
+}
+
+a {
+    border-bottom: 1px dotted #fafafa
+}
+
+a:active,
+a:hover {
+    outline: 0;
+}
+
+a:hover {
+    color: #ccc;
+}
+
+#bottom-panel {
+    margin-top: 2.5em;
+    display: flex;
+    justify-content: space-around;
+    flex-wrap: wrap;
+    justify-items: baseline;
+    align-items: center;
+    width: 70%;
+}
+
+svg.logo {
+    flex-shrink: 0;
+    height: 3em;
+}
+
+svg.logo:hover {
+    -webkit-border-radius: 10px;
+    -moz-border-radius: 10px;
+    border-radius: 10px;
+    -webkit-box-shadow: 0px 0px 30px 0px rgba(181, 81, 128, 0.79);
+    -moz-box-shadow: 0px 0px 30px 0px rgba(181, 81, 128, 0.79);
+    box-shadow: 0px 0px 30px 0px rgba(181, 81, 128, 0.79);
+}
+
+@font-face {
+    font-family: 'Roboto Mono';
+    font-style: normal;
+    font-weight: 400;
+    src: url('../fonts/robotomonoregular.eot'); /* IE9 Compat Modes */
+    src: local('Roboto Mono'), local('RobotoMono-Regular'),
+    url('../fonts/robotomonoregular.eot?#iefix') format('embedded-opentype'), /* IE6-IE8 */ url('../fonts/robotomonoregular.woff2') format('woff2'), /* Super Modern Browsers */ url('../fonts/robotomonoregular.woff') format('woff'), /* Modern Browsers */ url('../fonts/robotomonoregular.ttf') format('truetype'), /* Safari, Android, iOS */ url('../fonts/robotomonoregular.svg#RobotoMono') format('svg'); /* Legacy iOS */
+}
+

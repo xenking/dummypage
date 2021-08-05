@@ -1,11 +1,9 @@
-FROM python:3.7-alpine
-WORKDIR /code
-RUN apk update \
-    && apk add --update --no-cache gcc musl-dev linux-headers alpine-sdk
-COPY requirements.txt requirements.txt
-RUN pip install -U setuptools \
-    && pip install -r requirements.txt
-COPY app ./app
-#EXPOSE 5000:5000
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "5000"]
-#ENTRYPOINT ["/bin/sh"]
+FROM golang:1.15-alpine
+
+WORKDIR /dummypage
+
+COPY vendor ./vendor
+COPY . .
+
+RUN CGO_ENABLED=0 GO111MODULE=on GOOS=linux GOARCH=amd64 go build -mod vendor -ldflags='-w -s' -o dummypage ./cmd
+ENTRYPOINT ["./dummypage"]
