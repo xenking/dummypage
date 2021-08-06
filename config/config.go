@@ -11,11 +11,11 @@ type Config struct {
 	API struct {
 		Server server.Config
 	}
-	Log     Log
+	Log     LogConfig
 	Metrics metrics.Config
 }
 
-type Log struct {
+type LogConfig struct {
 	Level    string `default:"debug"`
 	Filename string `default:"./app"`
 	FileMaxSize int64
