@@ -27,7 +27,7 @@ func main() {
 	}
 
 	// Create global logger
-	if err := initLogger(cfg); err != nil {
+	if err := initLogger(cfg.Log); err != nil {
 		log.Fatal().Err(err).Stack().Msg("init logger")
 	}
 	s := server.New(cfg.API.Server)
@@ -45,28 +45,28 @@ func initConfig(prefix string, cfg *config.Config) error {
 	return nil
 }
 
-func initLogger(cfg *config.Config) error {
+func initLogger(cfg config.LogConfig) error {
 	log.DefaultLogger = log.Logger{
-		Level:  log.ParseLevel(cfg.Log.Level),
+		Level:  log.ParseLevel(cfg.Level),
 		Caller: 1,
 		Writer: &log.MultiWriter{
 			InfoWriter: &log.FileWriter{
-				Filename: cfg.Log.Filename + ".info.log",
-				MaxSize:  cfg.Log.FileMaxSize,
+				Filename: cfg.Filename + ".info.log",
+				MaxSize:  cfg.FileMaxSize,
 			},
 			WarnWriter: &log.FileWriter{
-				Filename: cfg.Log.Filename + ".warn.log",
-				MaxSize:  cfg.Log.FileMaxSize,
+				Filename: cfg.Filename + ".warn.log",
+				MaxSize:  cfg.FileMaxSize,
 			},
 			ErrorWriter: &log.FileWriter{
-				Filename: cfg.Log.Filename + ".error.log",
-				MaxSize:  cfg.Log.FileMaxSize,
+				Filename: cfg.Filename + ".error.log",
+				MaxSize:  cfg.FileMaxSize,
 			},
 			ConsoleWriter: &log.ConsoleWriter{
 				ColorOutput:    true,
 				EndWithMessage: true,
 			},
-			ConsoleLevel: log.ParseLevel(cfg.Log.Level),
+			ConsoleLevel: log.ParseLevel(cfg.Level),
 		},
 	}
 	return nil
