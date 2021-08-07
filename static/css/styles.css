@@ -4,6 +4,7 @@ body {
     align-self: center;
     justify-content: center;
     align-content: center;
+    flex-direction: column;
     flex: 1 0 auto;
     font-family: 'Roboto Mono', monospace;
     background: #212121;
@@ -36,16 +37,9 @@ body {
     color: #fafafa;
 }
 
-a,
-a.infos {
-    background: 0 0;
-    color: #fafafa;
-    text-decoration: none;
-}
-
 a.infos {
     border-bottom: none !important;
-    font-size: 3rem;
+    font-size: 2rem;
     display: inline-block;
     /*flex-grow: 1;*/
     /*margin:2rem 0 0 2rem;*/
@@ -54,7 +48,9 @@ a.infos {
 }
 
 a {
-    border-bottom: 1px dotted #fafafa
+    border-bottom: 1px dotted #fafafa;
+    text-decoration: none;
+    color: #333;
 }
 
 a:active,
@@ -82,12 +78,13 @@ svg.logo {
 }
 
 svg.logo:hover {
-    -webkit-border-radius: 10px;
-    -moz-border-radius: 10px;
-    border-radius: 10px;
-    -webkit-box-shadow: 0px 0px 30px 0px rgba(181, 81, 128, 0.79);
-    -moz-box-shadow: 0px 0px 30px 0px rgba(181, 81, 128, 0.79);
-    box-shadow: 0px 0px 30px 0px rgba(181, 81, 128, 0.79);
+    filter: drop-shadow(0px 0px 30px rgba(181, 81, 128, 0.79));
+}
+
+footer {
+    margin-top: auto;
+    display: flex;
+    justify-content: center;
 }
 
 @font-face {

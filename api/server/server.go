@@ -20,18 +20,21 @@ var appVersion string
 type Server struct {
 	*fiber.App
 	addr   string
-	logger log.Logger
+	logger *log.Logger
 }
 
 type Config struct {
 	Addr    string `default:"localhost:3000"`
 	Version string `default:"1.0.0"`
 
-	ViewsFolder  string `default:"./views"`
-	ViewsExt     string `default:".html"`
-	StaticFolder string `default:"./static"`
-	StaticPrefix string `default:"/"`
-	IndexFile    string `default:"templates/index.html"`
+	Prefork         bool
+	FilesFolder     string `default:"./files"`
+	FilesPrefix     string `default:"files"`
+	ViewsFolder     string `default:"./static/templates"`
+	ViewsExt        string `default:".html"`
+	StaticFolder    string `default:"./static"`
+	StaticPrefix    string `default:"/"`
+	TemplatesPrefix string `default:"templates"`
 
 	Limiter limiter.Config
 	Cache   cache.Config
@@ -42,14 +45,29 @@ func New(cfg Config) *Server {
 	appVersion = cfg.Version
 	s := &Server{
 		App: fiber.New(fiber.Config{
-			Prefork:      true,
-			Views:        html.New(cfg.ViewsFolder, cfg.ViewsExt),
-			ReadTimeout:  10 * time.Second,
-			WriteTimeout: 10 * time.Second,
+			Prefork:           cfg.Prefork,
+			ReadTimeout:       10 * time.Second,
+			WriteTimeout:      10 * time.Second,
+			AppName:           "DummyPage",
+			Views:             html.New(cfg.ViewsFolder, cfg.ViewsExt),
+			GETOnly:           true,
+			StreamRequestBody: true,
 		}),
-		addr: cfg.Addr,
+		addr:   cfg.Addr,
+		logger: cfg.Logger.Logger,
 	}
 	return s.setupMiddlewares(cfg)
+}
+
+func notFoundHandler(cfg Config) fiber.Handler {
+	return func(ctx *fiber.Ctx) error {
+
+		err := ctx.Status(fiber.StatusNotFound).Render("404", fiber.Map{})
+		if err != nil {
+			return ctx.Status(500).SendString("Internal Server Error")
+		}
+		return nil
+	}
 }
 
 func (s *Server) setupMiddlewares(cfg Config) *Server {
@@ -63,11 +81,17 @@ func (s *Server) setupMiddlewares(cfg Config) *Server {
 
 	s.App.Static(cfg.StaticPrefix, cfg.StaticFolder, fiber.Static{
 		Compress:      true,
-		ByteRange:     false,
-		Index:         cfg.IndexFile,
+		Index:         cfg.TemplatesPrefix + "/index.html",
 		CacheDuration: 10 * time.Hour,
 		MaxAge:        int(time.Hour / time.Second),
 	})
+	s.App.Static(cfg.FilesPrefix, cfg.FilesFolder, fiber.Static{
+		Compress:      true,
+		CacheDuration: 10 * time.Hour,
+		MaxAge:        int(time.Hour / time.Second),
+	})
+	s.App.Use(notFoundHandler(cfg))
+
 	return s
 }
 

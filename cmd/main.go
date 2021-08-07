@@ -1,40 +1,58 @@
 package main
 
 import (
+	"context"
+	"github.com/xenking/dummypage/pkg/storage/memory"
+	"os"
+	"os/signal"
+	"syscall"
+
 	"github.com/phuslu/log"
 	"github.com/xenking/dummypage/api/server"
 	"github.com/xenking/dummypage/config"
 	"github.com/xenking/dummypage/metrics"
-	"github.com/xenking/dummypage/usignal"
-	"runtime"
 )
 
 const prefix = "APP"
 
 func main() {
-	// Completely disable memory profiling if we aren't going to use it.
-	// If we don't do this the profiler will take a sample every 0.5MiB bytes allocated.
-	runtime.MemProfileRate = 0
-	runtime.GOMAXPROCS(runtime.NumCPU())
+	ctx, cancel := appContext()
+	defer cancel()
 
+	if err := runMain(ctx); err != nil {
+		log.Fatal().Err(err)
+	}
+}
+
+// appContext returns context that will be cancelled on specific OS signals.
+func appContext() (context.Context, context.CancelFunc) {
+	signals := []os.Signal{syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), signals...)
+	return ctx, cancel
+}
+
+func runMain(ctx context.Context) error {
 	cfg := &config.Config{}
-
-	ctx, cancel := usignal.InterruptContext()
 
 	// Load configuration from environment
 	if err := initConfig(prefix, cfg); err != nil {
 		log.Fatal().Err(err).Stack().Msg("init config")
 	}
+	cfg.Server.Limiter.Storage = memory.New()
+	cfg.Server.Cache.Storage = memory.New()
 
 	// Create global logger
 	if err := initLogger(cfg.Log); err != nil {
 		log.Fatal().Err(err).Stack().Msg("init logger")
 	}
-	s := server.New(cfg.API.Server)
+
+	s := server.New(cfg.Server)
 	metric := metrics.New(cfg.Metrics)
 	metric.RegisterAt(s.App)
 	s.Run(ctx)
-	cancel()
+
+	return nil
 }
 
 func initConfig(prefix string, cfg *config.Config) error {

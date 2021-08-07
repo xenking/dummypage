@@ -8,16 +8,14 @@ import (
 )
 
 type Config struct {
-	API struct {
-		Server server.Config
-	}
+	Server  server.Config
 	Log     LogConfig
 	Metrics metrics.Config
 }
 
 type LogConfig struct {
-	Level    string `default:"debug"`
-	Filename string `default:"./app"`
+	Level       string `default:"debug"`
+	Filename    string `default:"./app"`
 	FileMaxSize int64
 }
 

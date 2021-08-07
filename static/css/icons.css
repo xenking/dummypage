@@ -1,19 +1,19 @@
 @font-face {
-  font-family: 'xenkingpro';
-  src:  url('../../fonts/xenkingpro.eot?is59h4');
-  src:  url('../../fonts/xenkingpro.eot?is59h4#iefix') format('embedded-opentype'),
-    url('../fonts/xenkingpro.ttf?is59h4') format('truetype'),
-    url('../fonts/xenkingpro.woff?is59h4') format('woff'),
-    url('../fonts/xenkingpro.svg?is59h4#xenkingpro') format('svg');
-  font-weight: normal;
-  font-style: normal;
-  font-display: block;
+    font-family: 'xenking';
+    src: url('../fonts/xenking.eot?8b75ls');
+    src: url('../fonts/xenking.eot?8b75ls#iefix') format('embedded-opentype'),
+    url('../fonts/xenking.ttf?8b75ls') format('truetype'),
+    url('../fonts/xenking.woff?8b75ls') format('woff'),
+    url('../fonts/xenking.svg?8b75ls#xenking') format('svg');
+    font-weight: normal;
+    font-style: normal;
+    font-display: block;
 }
 
-[class^="icon-"], [class*=" icon-"] {
+.icon {
     /* use !important to prevent issues with browser extensions that change fonts */
-    font-family: 'xenkingpro' !important;
-    speak: none;
+    font-family: 'xenking' !important;
+    speak: never;
     font-style: normal;
     font-weight: normal;
     font-variant: normal;
@@ -25,67 +25,59 @@
     -moz-osx-font-smoothing: grayscale;
 }
 
+.github:before {
+    content: "\e900";
+}
 
-.icon-soundscape:before {
+.gitlab:before {
+    content: "\e901";
+}
+
+.linkedin:before {
+    content: "\e902";
+}
+
+.resume:before {
     content: "\e903";
-    animation: fizzle 2s ease alternate infinite;
-    animation-play-state: paused;
+}
+
+.telegram:before {
+    content: "\e904";
+}
+
+.twitter:before {
+    content: "\e905";
+}
+
+.stack {
+    position: relative;
+    z-index: 1;
     display: inline-block;
+    width: 2em;
+    height: 2em;
+    line-height: 2em;
+    vertical-align: middle;
 }
 
-.icon-soundscape:hover:before {
-    animation-play-state: running;
+.stack.ellipse:after {
+    content: "\ea0c";
 }
 
-.icon-gitlab:before {
-  content: "\e90a";
-}
-.icon-coders-rank:before {
-  content: "\e906";
-}
-.icon-codesandbox:before {
-  content: "\e907";
-}
-.icon-twitter:before {
-  content: "\f081";
-}
-.icon-linkedin:before {
-  content: "\f08c";
-}
-.icon-stack-overflow:before {
-  content: "\f16c";
-}
-.icon-bitbucket:before {
-  content: "\f172";
-}
-.icon-chevron-left:before {
-  content: "\e900";
-}
-.icon-chevron-right:before {
-  content: "\e901";
-}
-.icon-code:before {
-  content: "\e908";
-}
-.icon-image:before {
-  content: "\e902";
-}
-.icon-vk:before {
-  content: "\e909";
+.stack:after {
+    position: absolute;
+    z-index: -1;
+    left: 0;
+    width: 100%;
+    text-align: center;
+    font-size: 2em;
+    color: #fafafa
 }
 
-.icon-telegram:before {
-  content: "\e904";
-}
-.icon-github:before {
-  content: "\e905";
-}
-
-@keyframes fizzle {
-    50% {
-        transform: scale(0.9) rotate(15deg);
-    }
-    100% {
-        transform: rotate(-15deg);
-    }
+.stack:before {
+    position: absolute;
+    left: 0;
+    width: 100%;
+    text-align: center;
+    line-height: inherit;
+    color: #333;
 }

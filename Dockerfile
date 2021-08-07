@@ -9,5 +9,6 @@ RUN CGO_ENABLED=0 GO111MODULE=on GOOS=linux GOARCH=amd64 go build -v -ldflags='-
 
 FROM alpine
 WORKDIR /app
-COPY --from=build /app/build/service /app/build/service
-ENTRYPOINT ["/app/build/service"]
+COPY --from=build /app/build/service /app/service
+COPY --from=build /app/static /app/static
+ENTRYPOINT ["/app/service"]
