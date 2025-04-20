@@ -12,6 +12,7 @@ import (
 	"github.com/gofiber/fiber/v3/middleware/requestid"
 	"github.com/gofiber/fiber/v3/middleware/static"
 	"github.com/gofiber/template/html/v2"
+	"github.com/gofiber/utils/v2"
 	"github.com/phuslu/log"
 
 	"github.com/xenking/dummypage/internal/meta"
@@ -27,7 +28,7 @@ type Server struct {
 
 type Config struct {
 	Addr    string `default:"localhost:3000"`
-	Version string `default:"1.0.0"`
+	Version string `default:"2.0.0"`
 
 	FilesFolder     string `default:"./files"`
 	FilesPrefix     string `default:"files"`
@@ -36,9 +37,6 @@ type Config struct {
 	StaticFolder    string `default:"./static"`
 	StaticPrefix    string `default:"/"`
 	TemplatesPrefix string `default:"templates"`
-
-	Limiter limiter.Config
-	Cache   cache.Config
 }
 
 func New(cfg Config, logger *log.Logger) *Server {
@@ -55,7 +53,7 @@ func newServer(cfg Config, logger *log.Logger) *Server {
 			AppName:           "DummyPage",
 			Views:             html.New(cfg.ViewsFolder, cfg.ViewsExt),
 			GETOnly:           true,
-			StreamRequestBody: true,
+			StreamRequestBody: false,
 		}),
 		addr: cfg.Addr,
 	}
@@ -66,8 +64,28 @@ func (s *Server) setupMiddlewares(cfg Config, logger *log.Logger) *Server {
 	s.Use(requestid.New())
 
 	s.Use(csrf.New())
-	s.Use(limiter.New(cfg.Limiter))
-	s.Use(cache.New(cfg.Cache))
+	s.Use(limiter.New(limiter.Config{
+		Max:        10,
+		Expiration: 1 * time.Minute,
+		KeyGenerator: func(c fiber.Ctx) string {
+			return c.IP()
+		},
+		LimitReached: func(c fiber.Ctx) error {
+			return c.SendStatus(fiber.StatusTooManyRequests)
+		},
+		SkipFailedRequests:     false,
+		SkipSuccessfulRequests: true,
+		LimiterMiddleware:      limiter.FixedWindow{},
+	}))
+	s.Use(cache.New(cache.Config{
+		Expiration:   10 * time.Minute,
+		CacheHeader:  "X-Cache",
+		CacheControl: true,
+		KeyGenerator: func(c fiber.Ctx) string {
+			return utils.CopyString(c.Path())
+		},
+		Methods: []string{fiber.MethodGet, fiber.MethodHead},
+	}))
 	s.Use(logadapter.New(logger))
 
 	s.Use(cfg.StaticPrefix, static.New(cfg.StaticFolder, static.Config{
