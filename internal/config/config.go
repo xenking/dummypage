@@ -1,22 +1,18 @@
 package config
 
 import (
-	"github.com/xenking/dummypage/api/server"
-	"github.com/xenking/dummypage/metrics"
-
 	"github.com/cristalhq/aconfig"
+
+	"github.com/xenking/dummypage/internal/server"
 )
 
 type Config struct {
-	Server  server.Config
-	Log     LogConfig
-	Metrics metrics.Config
+	Server server.Config
+	Log    LogConfig
 }
 
 type LogConfig struct {
-	Level       string `default:"debug"`
-	Filename    string `default:"./app"`
-	FileMaxSize int64
+	Level string `default:"debug"`
 }
 
 func LoadEnv(prefix string, configStruct interface{}) error {

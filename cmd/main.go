@@ -2,18 +2,16 @@ package main
 
 import (
 	"context"
-	"github.com/xenking/dummypage/pkg/storage/memory"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/phuslu/log"
-	"github.com/xenking/dummypage/api/server"
-	"github.com/xenking/dummypage/config"
-	"github.com/xenking/dummypage/metrics"
-)
 
-const prefix = "APP"
+	"github.com/xenking/dummypage/internal/config"
+	"github.com/xenking/dummypage/internal/meta"
+	"github.com/xenking/dummypage/internal/server"
+)
 
 func main() {
 	ctx, cancel := appContext()
@@ -36,27 +34,27 @@ func runMain(ctx context.Context) error {
 	cfg := &config.Config{}
 
 	// Load configuration from environment
-	if err := initConfig(prefix, cfg); err != nil {
+	if err := initConfig(cfg); err != nil {
 		log.Fatal().Err(err).Stack().Msg("init config")
 	}
-	cfg.Server.Limiter.Storage = memory.New()
-	cfg.Server.Cache.Storage = memory.New()
 
 	// Create global logger
 	if err := initLogger(cfg.Log); err != nil {
 		log.Fatal().Err(err).Stack().Msg("init logger")
 	}
 
-	s := server.New(cfg.Server)
-	metric := metrics.New(cfg.Metrics)
-	metric.RegisterAt(s.App)
+	ctx = meta.WithLogger(ctx, &log.DefaultLogger)
+
+	s := server.New(cfg.Server, &log.DefaultLogger)
 	s.Run(ctx)
 
 	return nil
 }
 
-func initConfig(prefix string, cfg *config.Config) error {
-	err := config.LoadEnv(prefix, &cfg)
+func initConfig(cfg *config.Config) error {
+	const envPrefix = "APP"
+
+	err := config.LoadEnv(envPrefix, cfg)
 	if err != nil {
 		return err
 	}
@@ -65,26 +63,10 @@ func initConfig(prefix string, cfg *config.Config) error {
 
 func initLogger(cfg config.LogConfig) error {
 	log.DefaultLogger = log.Logger{
-		Level:  log.ParseLevel(cfg.Level),
-		Caller: 1,
-		Writer: &log.MultiWriter{
-			InfoWriter: &log.FileWriter{
-				Filename: cfg.Filename + ".info.log",
-				MaxSize:  cfg.FileMaxSize,
-			},
-			WarnWriter: &log.FileWriter{
-				Filename: cfg.Filename + ".warn.log",
-				MaxSize:  cfg.FileMaxSize,
-			},
-			ErrorWriter: &log.FileWriter{
-				Filename: cfg.Filename + ".error.log",
-				MaxSize:  cfg.FileMaxSize,
-			},
-			ConsoleWriter: &log.ConsoleWriter{
-				ColorOutput:    true,
-				EndWithMessage: true,
-			},
-			ConsoleLevel: log.ParseLevel(cfg.Level),
+		Level: log.ParseLevel(cfg.Level),
+		Writer: &log.ConsoleWriter{
+			ColorOutput:    true,
+			EndWithMessage: true,
 		},
 	}
 	return nil
