@@ -2,8 +2,6 @@ package server
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -37,6 +35,7 @@ type Config struct {
 	FilesFolder      string `default:"./files"`
 	FilesPrefix      string `default:"files"`
 	LargeFilesFolder string `default:"./large"`
+	LargeFilesPrefix string `default:"large"`
 	ViewsFolder      string `default:"./static/templates"`
 	ViewsExt         string `default:".html"`
 	StaticFolder     string `default:"./static"`
@@ -94,7 +93,8 @@ func (s *Server) setupMiddlewares(cfg Config, logger *log.Logger) *Server {
 			return utils.CopyString(c.Path())
 		},
 		Next: func(c fiber.Ctx) bool {
-			return strings.HasPrefix(c.Path(), "/large/")
+			skip := strings.HasPrefix(c.Path(), "/large/")
+			return skip
 		},
 		Methods: []string{fiber.MethodGet, fiber.MethodHead},
 	}))
@@ -110,6 +110,12 @@ func (s *Server) setupMiddlewares(cfg Config, logger *log.Logger) *Server {
 		CacheDuration: 10 * time.Hour,
 		MaxAge:        int(time.Hour / time.Second),
 	}))
+	s.Use(cfg.LargeFilesPrefix, static.New(cfg.LargeFilesFolder, static.Config{
+		Compress:      false,
+		Download:      true,
+		ByteRange:     true,
+		CacheDuration: -1,
+	}))
 
 	return s
 }
@@ -117,7 +123,6 @@ func (s *Server) setupMiddlewares(cfg Config, logger *log.Logger) *Server {
 func (s *Server) registerRoutes() *Server {
 	s.Get("/", handleIndex())
 	s.Get("/version", handleVersion)
-	s.Get("/large/:file", s.handleLargeFile())
 	s.Use(handleNotFound())
 
 	return s
@@ -147,30 +152,6 @@ func handleVersion(ctx fiber.Ctx) error {
 		"version":   appVersion,
 		"timestamp": time.Now(),
 	})
-}
-
-func (s *Server) handleLargeFile() fiber.Handler {
-	return func(c fiber.Ctx) error {
-		reqPath := filepath.Clean(c.Params("file"))
-		baseDir := filepath.Clean(s.cfg.LargeFilesFolder)
-		full := filepath.Join(baseDir, reqPath)
-
-		if !strings.HasPrefix(full, baseDir+string(os.PathSeparator)) {
-			return fiber.ErrForbidden
-		}
-
-		if err := c.SendFile(full, fiber.SendFile{Compress: true, Download: true}); err != nil {
-			if os.IsNotExist(err) {
-				return fiber.ErrNotFound
-			}
-			return fiber.ErrInternalServerError
-		}
-
-		// Attach header only *after* SendFile so it isn't overwritten
-		c.Attachment(filepath.Base(full)) // “Content-Disposition: attachment”
-		c.Set("X-Accel-Buffering", "no")  // disable proxy buffering (nginx)
-		return nil
-	}
 }
 
 func (s *Server) Run(ctx context.Context) {
