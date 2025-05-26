@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bufio"
 	"context"
 	"os"
 	"path/filepath"
@@ -173,7 +172,8 @@ func (s *Server) handleLargeFileDownload() fiber.Handler {
 			}
 			return c.Status(fiber.StatusInternalServerError).SendString("Failed to open file")
 		}
-		// Don't defer file.Close() here! It would close the file before streaming begins
+		// Do NOT use defer file.Close() here!
+		// SetBodyStream takes ownership of the file and will close it automatically
 
 		// Get file stats
 		stat, err := file.Stat()
@@ -189,43 +189,22 @@ func (s *Server) handleLargeFileDownload() fiber.Handler {
 		// Set appropriate headers for file download
 		c.Set("Content-Type", getContentType(filePath))
 		c.Set("Content-Disposition", "attachment; filename=\""+filepath.Base(filePath)+"\"")
-		c.Set("Cache-Control", "no-cache")
-		c.Set("Connection", "keep-alive")
-		c.Set("Transfer-Encoding", "chunked")
+		// These settings help with memory usage
+		c.Set("Cache-Control", "no-store")
+		c.Set("Accept-Ranges", "bytes")
+
 		// X-Accel-Buffering disables proxy buffering for Nginx reverse proxies
 		c.Set("X-Accel-Buffering", "no")
 
-		// Use SendStreamWriter to stream the file in chunks
-		return c.SendStreamWriter(func(w *bufio.Writer) {
-			// Important: Close the file when streaming is complete
-			defer file.Close()
+		size64 := stat.Size()
+		size := int(size64)
+		if int64(size) != size64 {
+			size = -1
+		}
+		// Get direct access to the underlying fasthttp context
+		c.Response().SetBodyStream(file, size)
 
-			// Buffer for reading chunks of the file
-			buf := make([]byte, 16*1024*1024) // 16MB chunks
-
-			// Read the file in chunks and write to the response
-			for {
-				n, err := file.Read(buf)
-				if n > 0 {
-					// Write the chunk to the response
-					if _, writeErr := w.Write(buf[:n]); writeErr != nil {
-						// Client likely disconnected
-						break
-					}
-
-					// Flush the buffer to send the chunk immediately
-					if flushErr := w.Flush(); flushErr != nil {
-						// Client likely disconnected
-						break
-					}
-				}
-
-				// Check for EOF or other errors
-				if err != nil {
-					break
-				}
-			}
-		})
+		return nil
 	}
 }
 
