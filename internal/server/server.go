@@ -1,7 +1,11 @@
 package server
 
 import (
+	"bufio"
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
@@ -24,38 +28,44 @@ var appVersion string
 type Server struct {
 	*fiber.App
 	addr string
+	cfg  Config
 }
 
 type Config struct {
 	Addr    string `default:"localhost:3000"`
 	Version string `default:"2.0.0"`
 
-	FilesFolder     string `default:"./files"`
-	FilesPrefix     string `default:"files"`
-	ViewsFolder     string `default:"./static/templates"`
-	ViewsExt        string `default:".html"`
-	StaticFolder    string `default:"./static"`
-	StaticPrefix    string `default:"/"`
-	TemplatesPrefix string `default:"templates"`
+	FilesFolder      string `default:"./files"`
+	FilesPrefix      string `default:"files"`
+	LargeFilesFolder string `default:"./large"`
+	ViewsFolder      string `default:"./static/templates"`
+	ViewsExt         string `default:".html"`
+	StaticFolder     string `default:"./static"`
+	StaticPrefix     string `default:"/"`
+	TemplatesPrefix  string `default:"templates"`
 }
 
 func New(cfg Config, logger *log.Logger) *Server {
 	appVersion = cfg.Version
-	s := newServer(cfg, logger)
+	s := newServer(cfg)
 	return s.setupMiddlewares(cfg, logger).registerRoutes()
 }
 
-func newServer(cfg Config, logger *log.Logger) *Server {
+func newServer(cfg Config) *Server {
 	return &Server{
 		App: fiber.New(fiber.Config{
-			ReadTimeout:       10 * time.Second,
-			WriteTimeout:      10 * time.Second,
+			ReadTimeout:  10 * time.Second,
+			WriteTimeout: 0, // Disable write timeout
+			// Set IdleTimeout high to allow long-running downloads
+			IdleTimeout:       60 * time.Minute,
 			AppName:           "DummyPage",
 			Views:             html.New(cfg.ViewsFolder, cfg.ViewsExt),
 			GETOnly:           true,
 			StreamRequestBody: false,
+			DisableKeepalive:  false,
 		}),
 		addr: cfg.Addr,
+		cfg:  cfg,
 	}
 }
 
@@ -105,6 +115,7 @@ func (s *Server) setupMiddlewares(cfg Config, logger *log.Logger) *Server {
 func (s *Server) registerRoutes() *Server {
 	s.Get("/", handleIndex())
 	s.Get("/version", handleVersion)
+	s.Get("/large/:file", s.handleLargeFileDownload())
 	s.Use(handleNotFound())
 
 	return s
@@ -134,6 +145,120 @@ func handleVersion(ctx fiber.Ctx) error {
 		"version":   appVersion,
 		"timestamp": time.Now(),
 	})
+}
+
+// handleLargeFileDownload returns a handler for streaming large files
+// This implementation uses Fiber's SendStreamWriter to efficiently stream files
+// without loading them entirely into memory, which is essential for large files
+func (s *Server) handleLargeFileDownload() fiber.Handler {
+	return func(c fiber.Ctx) error {
+		// Get the file path from the URL
+		path := c.Params("file")
+		if path == "" {
+			return c.Status(fiber.StatusBadRequest).SendString("Missing file path")
+		}
+
+		// For security, sanitize the path and prevent directory traversal
+		basePath := s.cfg.LargeFilesFolder
+		filePath := filepath.Join(basePath, path)
+		if !strings.HasPrefix(filepath.Clean(filePath), filepath.Clean(basePath)) {
+			return c.Status(fiber.StatusForbidden).SendString("Invalid file path")
+		}
+
+		// Open the file
+		file, err := os.Open(filePath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return c.Status(fiber.StatusNotFound).SendString("File not found")
+			}
+			return c.Status(fiber.StatusInternalServerError).SendString("Failed to open file")
+		}
+		defer file.Close()
+
+		// Get file stats
+		stat, err := file.Stat()
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).SendString("Failed to get file info")
+		}
+
+		// Check if file is a directory
+		if stat.IsDir() {
+			return c.Status(fiber.StatusForbidden).SendString("Cannot download a directory")
+		}
+
+		// Set appropriate headers for file download
+		c.Set("Content-Type", getContentType(filePath))
+		c.Set("Content-Disposition", "attachment; filename=\""+filepath.Base(filePath)+"\"")
+		c.Set("Accept-Ranges", "bytes")
+		c.Set("Transfer-Encoding", "chunked")
+		c.Set("Connection", "keep-alive")
+		// X-Accel-Buffering disables proxy buffering for Nginx reverse proxies
+		c.Set("X-Accel-Buffering", "no")
+
+		// Use SendStreamWriter to stream the file in chunks
+		return c.SendStreamWriter(func(w *bufio.Writer) {
+			// Buffer for reading chunks of the file
+			buf := make([]byte, 16*1024*1024) // 16MB chunks
+
+			// Read the file in chunks and write to the response
+			for {
+				n, err := file.Read(buf)
+				if n > 0 {
+					// Write the chunk to the response
+					if _, writeErr := w.Write(buf[:n]); writeErr != nil {
+						// Client likely disconnected
+						break
+					}
+
+					// Flush the buffer to send the chunk immediately
+					if flushErr := w.Flush(); flushErr != nil {
+						// Client likely disconnected
+						break
+					}
+				}
+
+				// Check for EOF or other errors
+				if err != nil {
+					break
+				}
+			}
+		})
+	}
+}
+
+// getContentType determines the content type based on file extension
+func getContentType(path string) string {
+	ext := filepath.Ext(path)
+	switch strings.ToLower(ext) {
+	case ".html", ".htm":
+		return "text/html"
+	case ".css":
+		return "text/css"
+	case ".js":
+		return "application/javascript"
+	case ".json":
+		return "application/json"
+	case ".png":
+		return "image/png"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".gif":
+		return "image/gif"
+	case ".svg":
+		return "image/svg+xml"
+	case ".xml":
+		return "application/xml"
+	case ".pdf":
+		return "application/pdf"
+	case ".zip":
+		return "application/zip"
+	case ".gz":
+		return "application/gzip"
+	case ".tar":
+		return "application/x-tar"
+	default:
+		return "application/octet-stream"
+	}
 }
 
 func (s *Server) Run(ctx context.Context) {
