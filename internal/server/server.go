@@ -114,7 +114,7 @@ func (s *Server) setupMiddlewares(cfg Config, logger *log.Logger) *Server {
 func (s *Server) registerRoutes() *Server {
 	s.Get("/", handleIndex())
 	s.Get("/version", handleVersion)
-	s.Get("/large/:file", s.handleLargeFileDownload())
+	s.Get("/large/:file", s.handleLargeFile())
 	s.Use(handleNotFound())
 
 	return s
@@ -146,100 +146,27 @@ func handleVersion(ctx fiber.Ctx) error {
 	})
 }
 
-// handleLargeFileDownload returns a handler for streaming large files
-// This implementation uses Fiber's SendStreamWriter to efficiently stream files
-// without loading them entirely into memory, which is essential for large files
-func (s *Server) handleLargeFileDownload() fiber.Handler {
+func (s *Server) handleLargeFile() fiber.Handler {
 	return func(c fiber.Ctx) error {
-		// Get the file path from the URL
-		path := c.Params("file")
-		if path == "" {
-			return c.Status(fiber.StatusBadRequest).SendString("Missing file path")
+		reqPath := filepath.Clean(c.Params("file"))
+		baseDir := filepath.Clean(s.cfg.LargeFilesFolder)
+		full := filepath.Join(baseDir, reqPath)
+
+		if !strings.HasPrefix(full, baseDir+string(os.PathSeparator)) {
+			return fiber.ErrForbidden
 		}
 
-		// For security, sanitize the path and prevent directory traversal
-		basePath := s.cfg.LargeFilesFolder
-		filePath := filepath.Join(basePath, path)
-		if !strings.HasPrefix(filepath.Clean(filePath), filepath.Clean(basePath)) {
-			return c.Status(fiber.StatusForbidden).SendString("Invalid file path")
-		}
-
-		// Open the file
-		file, err := os.Open(filePath)
-		if err != nil {
+		if err := c.SendFile(full, fiber.SendFile{Compress: true, Download: true}); err != nil {
 			if os.IsNotExist(err) {
-				return c.Status(fiber.StatusNotFound).SendString("File not found")
+				return fiber.ErrNotFound
 			}
-			return c.Status(fiber.StatusInternalServerError).SendString("Failed to open file")
-		}
-		// Do NOT use defer file.Close() here!
-		// SetBodyStream takes ownership of the file and will close it automatically
-
-		// Get file stats
-		stat, err := file.Stat()
-		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).SendString("Failed to get file info")
+			return fiber.ErrInternalServerError
 		}
 
-		// Check if file is a directory
-		if stat.IsDir() {
-			return c.Status(fiber.StatusForbidden).SendString("Cannot download a directory")
-		}
-
-		// Set appropriate headers for file download
-		c.Set("Content-Type", getContentType(filePath))
-		c.Set("Content-Disposition", "attachment; filename=\""+filepath.Base(filePath)+"\"")
-		// These settings help with memory usage
-		c.Set("Cache-Control", "no-store")
-		c.Set("Accept-Ranges", "bytes")
-
-		// X-Accel-Buffering disables proxy buffering for Nginx reverse proxies
-		c.Set("X-Accel-Buffering", "no")
-
-		size64 := stat.Size()
-		size := int(size64)
-		if int64(size) != size64 {
-			size = -1
-		}
-		// Get direct access to the underlying fasthttp context
-		c.Response().SetBodyStream(file, size)
-
+		// Attach header only *after* SendFile so it isn't overwritten
+		c.Attachment(filepath.Base(full)) // “Content-Disposition: attachment”
+		c.Set("X-Accel-Buffering", "no")  // disable proxy buffering (nginx)
 		return nil
-	}
-}
-
-// getContentType determines the content type based on file extension
-func getContentType(path string) string {
-	ext := filepath.Ext(path)
-	switch strings.ToLower(ext) {
-	case ".html", ".htm":
-		return "text/html"
-	case ".css":
-		return "text/css"
-	case ".js":
-		return "application/javascript"
-	case ".json":
-		return "application/json"
-	case ".png":
-		return "image/png"
-	case ".jpg", ".jpeg":
-		return "image/jpeg"
-	case ".gif":
-		return "image/gif"
-	case ".svg":
-		return "image/svg+xml"
-	case ".xml":
-		return "application/xml"
-	case ".pdf":
-		return "application/pdf"
-	case ".zip":
-		return "application/zip"
-	case ".gz":
-		return "application/gzip"
-	case ".tar":
-		return "application/x-tar"
-	default:
-		return "application/octet-stream"
 	}
 }
 
