@@ -173,7 +173,7 @@ func (s *Server) handleLargeFileDownload() fiber.Handler {
 			}
 			return c.Status(fiber.StatusInternalServerError).SendString("Failed to open file")
 		}
-		defer file.Close()
+		// Don't defer file.Close() here! It would close the file before streaming begins
 
 		// Get file stats
 		stat, err := file.Stat()
@@ -189,14 +189,17 @@ func (s *Server) handleLargeFileDownload() fiber.Handler {
 		// Set appropriate headers for file download
 		c.Set("Content-Type", getContentType(filePath))
 		c.Set("Content-Disposition", "attachment; filename=\""+filepath.Base(filePath)+"\"")
-		c.Set("Accept-Ranges", "bytes")
-		c.Set("Transfer-Encoding", "chunked")
+		c.Set("Cache-Control", "no-cache")
 		c.Set("Connection", "keep-alive")
+		c.Set("Transfer-Encoding", "chunked")
 		// X-Accel-Buffering disables proxy buffering for Nginx reverse proxies
 		c.Set("X-Accel-Buffering", "no")
 
 		// Use SendStreamWriter to stream the file in chunks
 		return c.SendStreamWriter(func(w *bufio.Writer) {
+			// Important: Close the file when streaming is complete
+			defer file.Close()
+
 			// Buffer for reading chunks of the file
 			buf := make([]byte, 16*1024*1024) // 16MB chunks
 
