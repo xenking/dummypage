@@ -93,6 +93,9 @@ func (s *Server) setupMiddlewares(cfg Config, logger *log.Logger) *Server {
 		KeyGenerator: func(c fiber.Ctx) string {
 			return utils.CopyString(c.Path())
 		},
+		Next: func(c fiber.Ctx) bool {
+			return strings.HasPrefix(c.Path(), "/large/")
+		},
 		Methods: []string{fiber.MethodGet, fiber.MethodHead},
 	}))
 	s.Use(logadapter.New(logger))
