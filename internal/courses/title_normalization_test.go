@@ -393,6 +393,42 @@ func TestTitleNormalizerStructuralCleanup(t *testing.T) {
 			changed: true,
 		},
 		{
+			name:    "ordinary single underscores become spaces",
+			input:   "Alpha_Beta_Gamma",
+			want:    "Alpha Beta Gamma",
+			changed: true,
+		},
+		{
+			name:    "URL underscore stays intact",
+			input:   "https://example.test/my_course",
+			want:    "https://example.test/my_course",
+			changed: false,
+		},
+		{
+			name:    "email underscore stays intact",
+			input:   "Contact user_name@example.test today",
+			want:    "Contact user_name@example.test today",
+			changed: false,
+		},
+		{
+			name:    "domain underscore stays intact",
+			input:   "sub_domain.example",
+			want:    "sub_domain.example",
+			changed: false,
+		},
+		{
+			name:    "technical file identifier stays intact",
+			input:   "Open archive_5881340_RUS today",
+			want:    "Open archive_5881340_RUS today",
+			changed: false,
+		},
+		{
+			name:    "whole technical-looking slug is cleaned",
+			input:   "Archive_5881340_RUS",
+			want:    "Archive 5881340 RUS",
+			changed: true,
+		},
+		{
 			name:    "malformed entity unchanged",
 			input:   "Fish &bogus; Chips",
 			want:    "Fish &bogus; Chips",

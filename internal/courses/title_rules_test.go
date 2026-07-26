@@ -295,6 +295,8 @@ func TestLoadTitleRulesRejectsInvalidRuleValues(t *testing.T) {
 		{name: "case insensitive duplicate", field: "protected_tokens_ci", value: `["nimbus","Nimbus"]`},
 		{name: "exact duplicate", field: "protected_tokens_exact", value: `["Vector","Vector"]`},
 		{name: "substring duplicate", field: "protected_substrings_ci", value: `["academy","Academy"]`},
+		{name: "multiword force token", field: "force_normalize_tokens_ci", value: `["novyiy stil"]`},
+		{name: "punctuation-split force token", field: "force_normalize_tokens_ci", value: `["alpha-beta"]`},
 	}
 
 	for _, test := range tests {

@@ -136,6 +136,11 @@ func LoadTitleRules(r io.Reader) (*TitleRules, error) {
 	if err := addCIRules("force_normalize_tokens_ci", file.ForceNormalizeTokensCI, rules.forceNormalizeTokensCI); err != nil {
 		return nil, err
 	}
+	for _, value := range file.ForceNormalizeTokensCI {
+		if !isSingleCourseTitleWord(value) {
+			return nil, fmt.Errorf("decode title rules: force_normalize_tokens_ci value %q must be exactly one title word", value)
+		}
+	}
 	phrases := make(map[string]struct{}, len(file.ForceNormalizePhrasesCI))
 	for _, value := range file.ForceNormalizePhrasesCI {
 		normalized, err := normalizeTitleRuleValue("force_normalize_phrases_ci", value)
@@ -165,6 +170,17 @@ func LoadTitleRules(r io.Reader) (*TitleRules, error) {
 	}
 
 	return rules, nil
+}
+
+func isSingleCourseTitleWord(value string) bool {
+	for offset := 0; offset < len(value); {
+		if !isCourseTitleWordRuneAt(value, offset) {
+			return false
+		}
+		_, size := utf8.DecodeRuneInString(value[offset:])
+		offset += size
+	}
+	return value != ""
 }
 
 func rejectDuplicateTopLevelKeys(data []byte) error {

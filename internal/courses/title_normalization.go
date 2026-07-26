@@ -133,14 +133,64 @@ func (normalizer titleNormalizer) cleanup(title string) string {
 			return r
 		}, title)
 	}
-	if cleanup.underscoresAsSpaces {
-		title = strings.ReplaceAll(title, "_", " ")
-		title = strings.Join(strings.Fields(title), " ")
-	}
 	if cleanup.stripLeadingProviderNoise {
 		title = stripLeadingProviderNoise(title)
 	}
+	if cleanup.underscoresAsSpaces {
+		title = cleanupCourseTitleUnderscores(title)
+	}
 	return title
+}
+
+func cleanupCourseTitleUnderscores(title string) string {
+	fields := strings.Fields(title)
+	cleaned := make([]string, 0, len(fields))
+	for _, field := range fields {
+		if preserveCourseTitleUnderscores(field, len(fields) > 1) {
+			cleaned = append(cleaned, field)
+			continue
+		}
+		cleaned = append(cleaned, strings.Fields(strings.ReplaceAll(field, "_", " "))...)
+	}
+	return strings.Join(cleaned, " ")
+}
+
+func preserveCourseTitleUnderscores(field string, embedded bool) bool {
+	if !strings.Contains(field, "_") {
+		return false
+	}
+	if strings.Contains(field, "://") ||
+		strings.Contains(field, "@") ||
+		strings.ContainsAny(field, `/\`) ||
+		looksLikeCourseTitleDomain(strings.ReplaceAll(field, "_", "-")) {
+		return true
+	}
+	if !embedded {
+		return false
+	}
+	if strings.ContainsAny(field, "0123456789") {
+		return true
+	}
+	for _, part := range strings.Split(field, "_") {
+		if len(part) > 1 && isASCIIUppercaseIdentifierPart(part) {
+			return true
+		}
+	}
+	return false
+}
+
+func isASCIIUppercaseIdentifierPart(value string) bool {
+	hasLetter := false
+	for _, r := range value {
+		switch {
+		case r >= 'A' && r <= 'Z':
+			hasLetter = true
+		case r >= '0' && r <= '9':
+		default:
+			return false
+		}
+	}
+	return hasLetter
 }
 
 func stripLeadingProviderNoise(title string) string {
