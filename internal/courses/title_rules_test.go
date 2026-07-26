@@ -5,12 +5,20 @@ import (
 	"testing"
 )
 
-func TestLoadTitleRulesAcceptsStrictRulesFile(t *testing.T) {
+func TestLoadTitleRulesAcceptsStrictV2RulesFile(t *testing.T) {
 	rules, err := LoadTitleRules(strings.NewReader(`{
-		"schema_version": "title-normalization-rules/v1",
+		"schema_version": "title-normalization-rules/v2",
 		"protected_tokens_ci": ["nimbus"],
 		"protected_tokens_exact": ["Vector"],
-		"protected_substrings_ci": ["academy"]
+		"protected_substrings_ci": ["academy"],
+		"force_normalize_tokens_ci": ["klyuchmarker"],
+		"force_normalize_phrases_ci": ["novyiy stil"],
+		"structural_cleanup": {
+			"decode_html_entities": true,
+			"drop_zero_width_format_chars": true,
+			"underscores_as_spaces": true,
+			"strip_leading_provider_noise": true
+		}
 	}`))
 	if err != nil {
 		t.Fatalf("LoadTitleRules() error = %v", err)
@@ -24,94 +32,222 @@ func TestLoadTitleRulesAcceptsStrictRulesFile(t *testing.T) {
 	if got := strings.Join(rules.protectedSubstringsCI, ","); got != "academy" {
 		t.Fatalf("protectedSubstringsCI = %q, want academy", got)
 	}
+	if _, ok := rules.forceNormalizeTokensCI["klyuchmarker"]; !ok {
+		t.Fatal("forceNormalizeTokensCI missing klyuchmarker")
+	}
+	if got := strings.Join(rules.forceNormalizePhrasesCI, ","); got != "novyiy stil" {
+		t.Fatalf("forceNormalizePhrasesCI = %q, want novyiy stil", got)
+	}
+	if !rules.structuralCleanup.decodeHTMLEntities ||
+		!rules.structuralCleanup.dropZeroWidthFormatChars ||
+		!rules.structuralCleanup.underscoresAsSpaces ||
+		!rules.structuralCleanup.stripLeadingProviderNoise {
+		t.Fatalf("structuralCleanup = %+v, want all enabled", rules.structuralCleanup)
+	}
 }
 
-func TestLoadTitleRulesRejectsInvalidFiles(t *testing.T) {
+func TestLoadTitleRulesRejectsInvalidV2Files(t *testing.T) {
 	tests := []struct {
 		name string
 		json string
 	}{
 		{
-			name: "wrong schema",
-			json: `{
-				"schema_version": "title-normalization-rules/v2",
-				"protected_tokens_ci": [],
-				"protected_tokens_exact": [],
-				"protected_substrings_ci": []
-			}`,
-		},
-		{
-			name: "unknown field",
+			name: "v1 schema",
 			json: `{
 				"schema_version": "title-normalization-rules/v1",
 				"protected_tokens_ci": [],
 				"protected_tokens_exact": [],
 				"protected_substrings_ci": [],
+				"force_normalize_tokens_ci": [],
+				"force_normalize_phrases_ci": [],
+				"structural_cleanup": {
+					"decode_html_entities": false,
+					"drop_zero_width_format_chars": false,
+					"underscores_as_spaces": false,
+					"strip_leading_provider_noise": false
+				}
+			}`,
+		},
+		{
+			name: "unknown top-level field",
+			json: `{
+				"schema_version": "title-normalization-rules/v2",
+				"protected_tokens_ci": [],
+				"protected_tokens_exact": [],
+				"protected_substrings_ci": [],
+				"force_normalize_tokens_ci": [],
+				"force_normalize_phrases_ci": [],
+				"structural_cleanup": {
+					"decode_html_entities": false,
+					"drop_zero_width_format_chars": false,
+					"underscores_as_spaces": false,
+					"strip_leading_provider_noise": false
+				},
 				"extra": []
+			}`,
+		},
+		{
+			name: "missing force token array",
+			json: `{
+				"schema_version": "title-normalization-rules/v2",
+				"protected_tokens_ci": [],
+				"protected_tokens_exact": [],
+				"protected_substrings_ci": [],
+				"force_normalize_phrases_ci": [],
+				"structural_cleanup": {
+					"decode_html_entities": false,
+					"drop_zero_width_format_chars": false,
+					"underscores_as_spaces": false,
+					"strip_leading_provider_noise": false
+				}
+			}`,
+		},
+		{
+			name: "missing protection array",
+			json: `{
+				"schema_version": "title-normalization-rules/v2",
+				"protected_tokens_ci": [],
+				"protected_tokens_exact": [],
+				"force_normalize_tokens_ci": [],
+				"force_normalize_phrases_ci": [],
+				"structural_cleanup": {
+					"decode_html_entities": false,
+					"drop_zero_width_format_chars": false,
+					"underscores_as_spaces": false,
+					"strip_leading_provider_noise": false
+				}
+			}`,
+		},
+		{
+			name: "missing structural cleanup",
+			json: `{
+				"schema_version": "title-normalization-rules/v2",
+				"protected_tokens_ci": [],
+				"protected_tokens_exact": [],
+				"protected_substrings_ci": [],
+				"force_normalize_tokens_ci": [],
+				"force_normalize_phrases_ci": []
+			}`,
+		},
+		{
+			name: "missing structural cleanup boolean",
+			json: `{
+				"schema_version": "title-normalization-rules/v2",
+				"protected_tokens_ci": [],
+				"protected_tokens_exact": [],
+				"protected_substrings_ci": [],
+				"force_normalize_tokens_ci": [],
+				"force_normalize_phrases_ci": [],
+				"structural_cleanup": {
+					"decode_html_entities": false,
+					"drop_zero_width_format_chars": false,
+					"underscores_as_spaces": false
+				}
+			}`,
+		},
+		{
+			name: "unknown structural cleanup field",
+			json: `{
+				"schema_version": "title-normalization-rules/v2",
+				"protected_tokens_ci": [],
+				"protected_tokens_exact": [],
+				"protected_substrings_ci": [],
+				"force_normalize_tokens_ci": [],
+				"force_normalize_phrases_ci": [],
+				"structural_cleanup": {
+					"decode_html_entities": false,
+					"drop_zero_width_format_chars": false,
+					"underscores_as_spaces": false,
+					"strip_leading_provider_noise": false,
+					"extra": false
+				}
+			}`,
+		},
+		{
+			name: "duplicate structural cleanup field",
+			json: `{
+				"schema_version": "title-normalization-rules/v2",
+				"protected_tokens_ci": [],
+				"protected_tokens_exact": [],
+				"protected_substrings_ci": [],
+				"force_normalize_tokens_ci": [],
+				"force_normalize_phrases_ci": [],
+				"structural_cleanup": {
+					"decode_html_entities": false,
+					"decode_html_entities": true,
+					"drop_zero_width_format_chars": false,
+					"underscores_as_spaces": false,
+					"strip_leading_provider_noise": false
+				}
+			}`,
+		},
+		{
+			name: "duplicate force token",
+			json: `{
+				"schema_version": "title-normalization-rules/v2",
+				"protected_tokens_ci": [],
+				"protected_tokens_exact": [],
+				"protected_substrings_ci": [],
+				"force_normalize_tokens_ci": ["klyuch", "Klyuch"],
+				"force_normalize_phrases_ci": [],
+				"structural_cleanup": {
+					"decode_html_entities": false,
+					"drop_zero_width_format_chars": false,
+					"underscores_as_spaces": false,
+					"strip_leading_provider_noise": false
+				}
+			}`,
+		},
+		{
+			name: "duplicate force phrase",
+			json: `{
+				"schema_version": "title-normalization-rules/v2",
+				"protected_tokens_ci": [],
+				"protected_tokens_exact": [],
+				"protected_substrings_ci": [],
+				"force_normalize_tokens_ci": [],
+				"force_normalize_phrases_ci": ["novyiy stil", "NOVYIY STIL"],
+				"structural_cleanup": {
+					"decode_html_entities": false,
+					"drop_zero_width_format_chars": false,
+					"underscores_as_spaces": false,
+					"strip_leading_provider_noise": false
+				}
+			}`,
+		},
+		{
+			name: "protected and forced token overlap",
+			json: `{
+				"schema_version": "title-normalization-rules/v2",
+				"protected_tokens_ci": ["klyuch"],
+				"protected_tokens_exact": [],
+				"protected_substrings_ci": [],
+				"force_normalize_tokens_ci": ["KLYUCH"],
+				"force_normalize_phrases_ci": [],
+				"structural_cleanup": {
+					"decode_html_entities": false,
+					"drop_zero_width_format_chars": false,
+					"underscores_as_spaces": false,
+					"strip_leading_provider_noise": false
+				}
 			}`,
 		},
 		{
 			name: "trailing json value",
 			json: `{
-				"schema_version": "title-normalization-rules/v1",
+				"schema_version": "title-normalization-rules/v2",
 				"protected_tokens_ci": [],
 				"protected_tokens_exact": [],
-				"protected_substrings_ci": []
+				"protected_substrings_ci": [],
+				"force_normalize_tokens_ci": [],
+				"force_normalize_phrases_ci": [],
+				"structural_cleanup": {
+					"decode_html_entities": false,
+					"drop_zero_width_format_chars": false,
+					"underscores_as_spaces": false,
+					"strip_leading_provider_noise": false
+				}
 			}{}`,
-		},
-		{
-			name: "empty value",
-			json: `{
-				"schema_version": "title-normalization-rules/v1",
-				"protected_tokens_ci": [""],
-				"protected_tokens_exact": [],
-				"protected_substrings_ci": []
-			}`,
-		},
-		{
-			name: "untrimmed value",
-			json: `{
-				"schema_version": "title-normalization-rules/v1",
-				"protected_tokens_ci": [" nimbus"],
-				"protected_tokens_exact": [],
-				"protected_substrings_ci": []
-			}`,
-		},
-		{
-			name: "case insensitive duplicate",
-			json: `{
-				"schema_version": "title-normalization-rules/v1",
-				"protected_tokens_ci": ["nimbus", "Nimbus"],
-				"protected_tokens_exact": [],
-				"protected_substrings_ci": []
-			}`,
-		},
-		{
-			name: "exact duplicate",
-			json: `{
-				"schema_version": "title-normalization-rules/v1",
-				"protected_tokens_ci": [],
-				"protected_tokens_exact": ["Vector", "Vector"],
-				"protected_substrings_ci": []
-			}`,
-		},
-		{
-			name: "substring duplicate",
-			json: `{
-				"schema_version": "title-normalization-rules/v1",
-				"protected_tokens_ci": [],
-				"protected_tokens_exact": [],
-				"protected_substrings_ci": ["academy", "Academy"]
-			}`,
-		},
-		{
-			name: "contradictory ci exact token overlap",
-			json: `{
-				"schema_version": "title-normalization-rules/v1",
-				"protected_tokens_ci": ["nimbus"],
-				"protected_tokens_exact": ["Nimbus"],
-				"protected_substrings_ci": []
-			}`,
 		},
 	}
 
@@ -125,67 +261,177 @@ func TestLoadTitleRulesRejectsInvalidFiles(t *testing.T) {
 }
 
 func TestLoadTitleRulesRejectsDuplicateTopLevelKeys(t *testing.T) {
+	_, err := LoadTitleRules(strings.NewReader(`{
+		"schema_version": "title-normalization-rules/v2",
+		"schema_version": "title-normalization-rules/v2",
+		"protected_tokens_ci": [],
+		"protected_tokens_exact": [],
+		"protected_substrings_ci": [],
+		"force_normalize_tokens_ci": [],
+		"force_normalize_phrases_ci": [],
+		"structural_cleanup": {
+			"decode_html_entities": false,
+			"drop_zero_width_format_chars": false,
+			"underscores_as_spaces": false,
+			"strip_leading_provider_noise": false
+		}
+	}`))
+	if err == nil {
+		t.Fatal("LoadTitleRules() error = nil, want duplicate key error")
+	}
+	if got := err.Error(); !strings.Contains(got, "decode title rules") || strings.Contains(got, "link tombstones") {
+		t.Fatalf("LoadTitleRules() error = %q, want title rules context only", got)
+	}
+}
+
+func TestLoadTitleRulesRejectsInvalidRuleValues(t *testing.T) {
 	tests := []struct {
-		name string
-		json string
+		name  string
+		field string
+		value string
 	}{
-		{
-			name: "schema version",
-			json: `{
-				"schema_version": "title-normalization-rules/v1",
-				"schema_version": "title-normalization-rules/v1",
-				"protected_tokens_ci": [],
-				"protected_tokens_exact": [],
-				"protected_substrings_ci": []
-			}`,
-		},
-		{
-			name: "case insensitive tokens",
-			json: `{
-				"schema_version": "title-normalization-rules/v1",
-				"protected_tokens_ci": ["nimbus"],
-				"protected_tokens_ci": ["vector"],
-				"protected_tokens_exact": [],
-				"protected_substrings_ci": []
-			}`,
-		},
-		{
-			name: "exact tokens",
-			json: `{
-				"schema_version": "title-normalization-rules/v1",
-				"protected_tokens_ci": [],
-				"protected_tokens_exact": ["Vector"],
-				"protected_tokens_exact": ["Nimbus"],
-				"protected_substrings_ci": []
-			}`,
-		},
-		{
-			name: "case insensitive substrings",
-			json: `{
-				"schema_version": "title-normalization-rules/v1",
-				"protected_tokens_ci": [],
-				"protected_tokens_exact": [],
-				"protected_substrings_ci": ["academy"],
-				"protected_substrings_ci": ["studio"]
-			}`,
-		},
+		{name: "empty value", field: "protected_tokens_ci", value: `[""]`},
+		{name: "untrimmed value", field: "protected_tokens_ci", value: `[" nimbus"]`},
+		{name: "case insensitive duplicate", field: "protected_tokens_ci", value: `["nimbus","Nimbus"]`},
+		{name: "exact duplicate", field: "protected_tokens_exact", value: `["Vector","Vector"]`},
+		{name: "substring duplicate", field: "protected_substrings_ci", value: `["academy","Academy"]`},
+		{name: "multiword force token", field: "force_normalize_tokens_ci", value: `["novyiy stil"]`},
+		{name: "punctuation-split force token", field: "force_normalize_tokens_ci", value: `["alpha-beta"]`},
+		{name: "hard-protected force token", field: "force_normalize_tokens_ci", value: `["alpha_2024"]`},
+		{name: "punctuation-split force phrase component", field: "force_normalize_phrases_ci", value: `["alpha-beta guide"]`},
+		{name: "hard-protected force phrase component", field: "force_normalize_phrases_ci", value: `["alpha 2024"]`},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := LoadTitleRules(strings.NewReader(test.json))
-			if err == nil {
-				t.Fatal("LoadTitleRules() error = nil, want duplicate key error")
-			}
-			if got := err.Error(); !strings.Contains(got, "decode title rules") || strings.Contains(got, "link tombstones") {
-				t.Fatalf("LoadTitleRules() error = %q, want title rules context only", got)
+			payload := `{
+				"schema_version": "title-normalization-rules/v2",
+				"protected_tokens_ci": [],
+				"protected_tokens_exact": [],
+				"protected_substrings_ci": [],
+				"force_normalize_tokens_ci": [],
+				"force_normalize_phrases_ci": [],
+				"structural_cleanup": {
+					"decode_html_entities": false,
+					"drop_zero_width_format_chars": false,
+					"underscores_as_spaces": false,
+					"strip_leading_provider_noise": false
+				}
+			}`
+			payload = strings.Replace(payload, `"`+test.field+`": []`, `"`+test.field+`": `+test.value, 1)
+			if _, err := LoadTitleRules(strings.NewReader(payload)); err == nil {
+				t.Fatal("LoadTitleRules() error = nil, want error")
 			}
 		})
 	}
 }
 
+func TestLoadTitleRulesRejectsShadowedForceRules(t *testing.T) {
+	tests := []struct {
+		name               string
+		protectedTokensCI  string
+		protectedExact     string
+		protectedSubstring string
+		forceTokens        string
+		forcePhrases       string
+	}{
+		{
+			name:               "force token shadowed by case insensitive token",
+			protectedTokensCI:  `["klyuchmarker"]`,
+			protectedExact:     `[]`,
+			protectedSubstring: `[]`,
+			forceTokens:        `["klyuchmarker"]`,
+			forcePhrases:       `[]`,
+		},
+		{
+			name:               "force token shadowed by substring",
+			protectedTokensCI:  `[]`,
+			protectedExact:     `[]`,
+			protectedSubstring: `["klyuch"]`,
+			forceTokens:        `["klyuchmarker"]`,
+			forcePhrases:       `[]`,
+		},
+		{
+			name:               "force phrase shadowed by exact token",
+			protectedTokensCI:  `[]`,
+			protectedExact:     `["Beta"]`,
+			protectedSubstring: `[]`,
+			forceTokens:        `[]`,
+			forcePhrases:       `["alpha beta"]`,
+		},
+		{
+			name:               "force phrase shadowed by case insensitive token",
+			protectedTokensCI:  `["alpha"]`,
+			protectedExact:     `[]`,
+			protectedSubstring: `[]`,
+			forceTokens:        `[]`,
+			forcePhrases:       `["alpha beta"]`,
+		},
+		{
+			name:               "force phrase shadowed by substring",
+			protectedTokensCI:  `[]`,
+			protectedExact:     `[]`,
+			protectedSubstring: `["bet"]`,
+			forceTokens:        `[]`,
+			forcePhrases:       `["alpha beta"]`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			payload := titleRulesTestPayload(
+				test.protectedTokensCI,
+				test.protectedExact,
+				test.protectedSubstring,
+				test.forceTokens,
+				test.forcePhrases,
+			)
+			if _, err := LoadTitleRules(strings.NewReader(payload)); err == nil {
+				t.Fatal("LoadTitleRules() error = nil, want shadowed rule error")
+			}
+		})
+	}
+}
+
+func titleRulesTestPayload(protectedCI, protectedExact, protectedSubstrings, forceTokens, forcePhrases string) string {
+	return `{
+		"schema_version": "title-normalization-rules/v2",
+		"protected_tokens_ci": ` + protectedCI + `,
+		"protected_tokens_exact": ` + protectedExact + `,
+		"protected_substrings_ci": ` + protectedSubstrings + `,
+		"force_normalize_tokens_ci": ` + forceTokens + `,
+		"force_normalize_phrases_ci": ` + forcePhrases + `,
+		"structural_cleanup": {
+			"decode_html_entities": false,
+			"drop_zero_width_format_chars": false,
+			"underscores_as_spaces": false,
+			"strip_leading_provider_noise": false
+		}
+	}`
+}
+
+func TestLoadTitleRulesRejectsProtectedTokenOverlap(t *testing.T) {
+	_, err := LoadTitleRules(strings.NewReader(`{
+		"schema_version": "title-normalization-rules/v2",
+		"protected_tokens_ci": ["nimbus"],
+		"protected_tokens_exact": ["Nimbus"],
+		"protected_substrings_ci": [],
+		"force_normalize_tokens_ci": [],
+		"force_normalize_phrases_ci": [],
+		"structural_cleanup": {
+			"decode_html_entities": false,
+			"drop_zero_width_format_chars": false,
+			"underscores_as_spaces": false,
+			"strip_leading_provider_noise": false
+		}
+	}`))
+	if err == nil {
+		t.Fatal("LoadTitleRules() error = nil, want overlap error")
+	}
+}
+
 func TestLoadTitleRulesRejectsInvalidUTF8(t *testing.T) {
-	if _, err := LoadTitleRules(strings.NewReader("{\"schema_version\":\"title-normalization-rules/v1\",\"protected_tokens_ci\":[\"\xff\"],\"protected_tokens_exact\":[],\"protected_substrings_ci\":[]}")); err == nil {
+	if _, err := LoadTitleRules(strings.NewReader("{\"schema_version\":\"title-normalization-rules/v2\",\"protected_tokens_ci\":[\"\xff\"],\"protected_tokens_exact\":[],\"protected_substrings_ci\":[],\"force_normalize_tokens_ci\":[],\"force_normalize_phrases_ci\":[],\"structural_cleanup\":{\"decode_html_entities\":false,\"drop_zero_width_format_chars\":false,\"underscores_as_spaces\":false,\"strip_leading_provider_noise\":false}}")); err == nil {
 		t.Fatal("LoadTitleRules() error = nil, want error")
 	}
 }

@@ -9,19 +9,39 @@ import (
 	"unicode/utf8"
 )
 
-const titleRulesSchema = "title-normalization-rules/v1"
+const titleRulesSchema = "title-normalization-rules/v2"
 
 type TitleRules struct {
-	protectedTokensCI     map[string]struct{}
-	protectedTokensExact  map[string]struct{}
-	protectedSubstringsCI []string
+	protectedTokensCI       map[string]struct{}
+	protectedTokensExact    map[string]struct{}
+	protectedSubstringsCI   []string
+	forceNormalizeTokensCI  map[string]struct{}
+	forceNormalizePhrasesCI []string
+	structuralCleanup       titleStructuralCleanup
 }
 
 type titleRulesFile struct {
-	SchemaVersion         string   `json:"schema_version"`
-	ProtectedTokensCI     []string `json:"protected_tokens_ci"`
-	ProtectedTokensExact  []string `json:"protected_tokens_exact"`
-	ProtectedSubstringsCI []string `json:"protected_substrings_ci"`
+	SchemaVersion           string          `json:"schema_version"`
+	ProtectedTokensCI       []string        `json:"protected_tokens_ci"`
+	ProtectedTokensExact    []string        `json:"protected_tokens_exact"`
+	ProtectedSubstringsCI   []string        `json:"protected_substrings_ci"`
+	ForceNormalizeTokensCI  []string        `json:"force_normalize_tokens_ci"`
+	ForceNormalizePhrasesCI []string        `json:"force_normalize_phrases_ci"`
+	StructuralCleanup       json.RawMessage `json:"structural_cleanup"`
+}
+
+type titleStructuralCleanup struct {
+	decodeHTMLEntities        bool
+	dropZeroWidthFormatChars  bool
+	underscoresAsSpaces       bool
+	stripLeadingProviderNoise bool
+}
+
+type titleStructuralCleanupFile struct {
+	DecodeHTMLEntities        *bool `json:"decode_html_entities"`
+	DropZeroWidthFormatChars  *bool `json:"drop_zero_width_format_chars"`
+	UnderscoresAsSpaces       *bool `json:"underscores_as_spaces"`
+	StripLeadingProviderNoise *bool `json:"strip_leading_provider_noise"`
 }
 
 func LoadTitleRules(r io.Reader) (*TitleRules, error) {
@@ -54,14 +74,40 @@ func LoadTitleRules(r io.Reader) (*TitleRules, error) {
 	}
 	if file.ProtectedTokensCI == nil ||
 		file.ProtectedTokensExact == nil ||
-		file.ProtectedSubstringsCI == nil {
+		file.ProtectedSubstringsCI == nil ||
+		file.ForceNormalizeTokensCI == nil ||
+		file.ForceNormalizePhrasesCI == nil {
 		return nil, fmt.Errorf("decode title rules: all rule arrays are required")
+	}
+	if len(file.StructuralCleanup) == 0 {
+		return nil, fmt.Errorf("decode title rules: structural_cleanup is required")
+	}
+	if err := rejectDuplicateTopLevelKeys(file.StructuralCleanup); err != nil {
+		return nil, fmt.Errorf("decode title rules: structural_cleanup: %w", err)
+	}
+	var cleanupFile titleStructuralCleanupFile
+	if err := decodeSingleJSONValue(file.StructuralCleanup, &cleanupFile); err != nil {
+		return nil, fmt.Errorf("decode title rules: structural_cleanup: %w", err)
+	}
+	if cleanupFile.DecodeHTMLEntities == nil ||
+		cleanupFile.DropZeroWidthFormatChars == nil ||
+		cleanupFile.UnderscoresAsSpaces == nil ||
+		cleanupFile.StripLeadingProviderNoise == nil {
+		return nil, fmt.Errorf("decode title rules: all structural_cleanup booleans are required")
 	}
 
 	rules := &TitleRules{
-		protectedTokensCI:     make(map[string]struct{}, len(file.ProtectedTokensCI)),
-		protectedTokensExact:  make(map[string]struct{}, len(file.ProtectedTokensExact)),
-		protectedSubstringsCI: make([]string, 0, len(file.ProtectedSubstringsCI)),
+		protectedTokensCI:       make(map[string]struct{}, len(file.ProtectedTokensCI)),
+		protectedTokensExact:    make(map[string]struct{}, len(file.ProtectedTokensExact)),
+		protectedSubstringsCI:   make([]string, 0, len(file.ProtectedSubstringsCI)),
+		forceNormalizeTokensCI:  make(map[string]struct{}, len(file.ForceNormalizeTokensCI)),
+		forceNormalizePhrasesCI: make([]string, 0, len(file.ForceNormalizePhrasesCI)),
+		structuralCleanup: titleStructuralCleanup{
+			decodeHTMLEntities:        *cleanupFile.DecodeHTMLEntities,
+			dropZeroWidthFormatChars:  *cleanupFile.DropZeroWidthFormatChars,
+			underscoresAsSpaces:       *cleanupFile.UnderscoresAsSpaces,
+			stripLeadingProviderNoise: *cleanupFile.StripLeadingProviderNoise,
+		},
 	}
 	if err := addCIRules("protected_tokens_ci", file.ProtectedTokensCI, rules.protectedTokensCI); err != nil {
 		return nil, err
@@ -87,8 +133,82 @@ func LoadTitleRules(r io.Reader) (*TitleRules, error) {
 			return nil, fmt.Errorf("decode title rules: protected token %q appears in both exact and case-insensitive sets", exact)
 		}
 	}
-
+	if err := addCIRules("force_normalize_tokens_ci", file.ForceNormalizeTokensCI, rules.forceNormalizeTokensCI); err != nil {
+		return nil, err
+	}
+	for _, value := range file.ForceNormalizeTokensCI {
+		if !isSingleCourseTitleWord(value) {
+			return nil, fmt.Errorf("decode title rules: force_normalize_tokens_ci value %q must be exactly one title word", value)
+		}
+		if isInherentlyHardProtectedTitleRuleWord(value) {
+			return nil, fmt.Errorf("decode title rules: force_normalize_tokens_ci value %q cannot match a protected title field", value)
+		}
+		if titleRuleWordIsExplicitlyProtected(rules, value) {
+			return nil, fmt.Errorf("decode title rules: force_normalize_tokens_ci value %q is shadowed by a protected title rule", value)
+		}
+	}
+	phrases := make(map[string]struct{}, len(file.ForceNormalizePhrasesCI))
+	for _, value := range file.ForceNormalizePhrasesCI {
+		normalized, err := normalizeTitleRuleValue("force_normalize_phrases_ci", value)
+		if err != nil {
+			return nil, err
+		}
+		words := strings.Fields(normalized)
+		if len(words) < 2 {
+			return nil, fmt.Errorf("decode title rules: force_normalize_phrases_ci value %q must contain at least two words", value)
+		}
+		for _, word := range words {
+			if !isSingleCourseTitleWord(word) {
+				return nil, fmt.Errorf("decode title rules: force_normalize_phrases_ci value %q contains invalid word %q", value, word)
+			}
+			if isInherentlyHardProtectedTitleRuleWord(word) {
+				return nil, fmt.Errorf("decode title rules: force_normalize_phrases_ci value %q contains protected word %q", value, word)
+			}
+			if titleRuleWordIsExplicitlyProtected(rules, word) {
+				return nil, fmt.Errorf("decode title rules: force_normalize_phrases_ci value %q is shadowed by protected word %q", value, word)
+			}
+		}
+		lower := strings.ToLower(strings.Join(words, " "))
+		if _, exists := phrases[lower]; exists {
+			return nil, fmt.Errorf("decode title rules: duplicate force_normalize_phrases_ci value %q", value)
+		}
+		phrases[lower] = struct{}{}
+		rules.forceNormalizePhrasesCI = append(rules.forceNormalizePhrasesCI, lower)
+	}
 	return rules, nil
+}
+
+func isSingleCourseTitleWord(value string) bool {
+	for offset := 0; offset < len(value); {
+		if !isCourseTitleWordRuneAt(value, offset) {
+			return false
+		}
+		_, size := utf8.DecodeRuneInString(value[offset:])
+		offset += size
+	}
+	return value != ""
+}
+
+func isInherentlyHardProtectedTitleRuleWord(value string) bool {
+	return strings.ContainsAny(value, "0123456789_@/:")
+}
+
+func titleRuleWordIsExplicitlyProtected(rules *TitleRules, value string) bool {
+	lower := strings.ToLower(value)
+	if _, protected := rules.protectedTokensCI[lower]; protected {
+		return true
+	}
+	for exact := range rules.protectedTokensExact {
+		if strings.EqualFold(value, exact) {
+			return true
+		}
+	}
+	for _, substring := range rules.protectedSubstringsCI {
+		if strings.Contains(lower, substring) {
+			return true
+		}
+	}
+	return false
 }
 
 func rejectDuplicateTopLevelKeys(data []byte) error {
@@ -136,15 +256,21 @@ func cloneTitleRules(rules *TitleRules) *TitleRules {
 		return nil
 	}
 	clone := &TitleRules{
-		protectedTokensCI:     make(map[string]struct{}, len(rules.protectedTokensCI)),
-		protectedTokensExact:  make(map[string]struct{}, len(rules.protectedTokensExact)),
-		protectedSubstringsCI: append([]string(nil), rules.protectedSubstringsCI...),
+		protectedTokensCI:       make(map[string]struct{}, len(rules.protectedTokensCI)),
+		protectedTokensExact:    make(map[string]struct{}, len(rules.protectedTokensExact)),
+		protectedSubstringsCI:   append([]string(nil), rules.protectedSubstringsCI...),
+		forceNormalizeTokensCI:  make(map[string]struct{}, len(rules.forceNormalizeTokensCI)),
+		forceNormalizePhrasesCI: append([]string(nil), rules.forceNormalizePhrasesCI...),
+		structuralCleanup:       rules.structuralCleanup,
 	}
 	for token := range rules.protectedTokensCI {
 		clone.protectedTokensCI[token] = struct{}{}
 	}
 	for token := range rules.protectedTokensExact {
 		clone.protectedTokensExact[token] = struct{}{}
+	}
+	for token := range rules.forceNormalizeTokensCI {
+		clone.forceNormalizeTokensCI[token] = struct{}{}
 	}
 	return clone
 }

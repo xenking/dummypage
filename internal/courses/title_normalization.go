@@ -1,6 +1,7 @@
 package courses
 
 import (
+	"html"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -58,10 +59,11 @@ var courseTitleReverseTranslit = translit.Map(map[string]string{
 })
 
 type courseTitleToken struct {
-	text      string
-	word      bool
-	bracketed bool
-	protected bool
+	text             string
+	word             bool
+	bracketed        bool
+	protected        bool
+	forceOverridable bool
 }
 
 type titleNormalizer struct {
@@ -77,22 +79,22 @@ func normalizeCourseTitle(title string) (string, bool) {
 }
 
 func (normalizer titleNormalizer) Normalize(title string) (string, bool) {
+	original := title
+	title = normalizer.cleanup(title)
 	tokens := normalizer.tokenize(title)
-	forcedTokens := forcedCourseTitleTokens(tokens)
-	score := scoreCourseTitle(tokens, forcedTokens)
-	normalizeWholeTitle := score >= 4
-	if !normalizeWholeTitle && len(forcedTokens) == 0 {
-		return title, false
+	normalizeWholeTitle := scoreCourseTitle(tokens) >= 4 ||
+		normalizer.forceNormalizeWholeTitle(tokens)
+	if !normalizeWholeTitle {
+		return title, title != original
 	}
 
 	var normalized strings.Builder
 	normalized.Grow(len(title))
-	for index, token := range tokens {
-		if !normalizeWholeTitle && !forcedTokens[index] {
-			normalized.WriteString(token.text)
-			continue
-		}
-		if !token.word || token.protected || !isLatinCourseTitleToken(token.text) {
+	for _, token := range tokens {
+		forcedToken := normalizer.isForcedToken(token)
+		if !token.word ||
+			(token.protected && !(token.forceOverridable && forcedToken)) ||
+			!isLatinCourseTitleToken(token.text) {
 			normalized.WriteString(token.text)
 			continue
 		}
@@ -102,7 +104,7 @@ func (normalizer titleNormalizer) Normalize(title string) (string, bool) {
 			strings.ToLower(token.text),
 		)
 		if err != nil {
-			return title, false
+			return original, false
 		}
 		if startsWithASCIICapital(token.text) {
 			first, size := utf8.DecodeRuneInString(value)
@@ -112,7 +114,326 @@ func (normalizer titleNormalizer) Normalize(title string) (string, bool) {
 	}
 
 	result := normalized.String()
-	return result, result != title
+	return result, result != original
+}
+
+func (normalizer titleNormalizer) cleanup(title string) string {
+	if normalizer.rules == nil {
+		return title
+	}
+	original := title
+	cleanup := normalizer.rules.structuralCleanup
+	if cleanup.decodeHTMLEntities {
+		title = unescapeStrictCourseTitleEntities(title)
+	}
+	if cleanup.dropZeroWidthFormatChars {
+		title = strings.Map(func(r rune) rune {
+			if unicode.Is(unicode.Cf, r) {
+				return -1
+			}
+			return r
+		}, title)
+	}
+	if cleanup.stripLeadingProviderNoise {
+		title = stripLeadingProviderNoise(title)
+	}
+	if cleanup.underscoresAsSpaces {
+		title = cleanupCourseTitleUnderscores(title)
+	}
+	if !hasVisibleCourseTitleContent(title) {
+		return original
+	}
+	return title
+}
+
+func unescapeStrictCourseTitleEntities(title string) string {
+	if !strings.Contains(title, "&") {
+		return title
+	}
+
+	var decoded strings.Builder
+	decoded.Grow(len(title))
+	for offset := 0; offset < len(title); {
+		relativeAmpersand := strings.IndexByte(title[offset:], '&')
+		if relativeAmpersand < 0 {
+			decoded.WriteString(title[offset:])
+			break
+		}
+
+		ampersand := offset + relativeAmpersand
+		decoded.WriteString(title[offset:ampersand])
+		end, ok := strictCourseTitleEntityEnd(title, ampersand)
+		if !ok {
+			decoded.WriteByte('&')
+			offset = ampersand + 1
+			continue
+		}
+		decoded.WriteString(html.UnescapeString(title[ampersand:end]))
+		offset = end
+	}
+	return decoded.String()
+}
+
+func strictCourseTitleEntityEnd(title string, ampersand int) (int, bool) {
+	index := ampersand + 1
+	if index >= len(title) {
+		return 0, false
+	}
+
+	if title[index] == '#' {
+		index++
+		if index < len(title) && (title[index] == 'x' || title[index] == 'X') {
+			index++
+			digitsStart := index
+			for index < len(title) && isASCIIHexDigit(title[index]) {
+				index++
+			}
+			return index + 1, index > digitsStart && index < len(title) && title[index] == ';'
+		}
+
+		digitsStart := index
+		for index < len(title) && title[index] >= '0' && title[index] <= '9' {
+			index++
+		}
+		return index + 1, index > digitsStart && index < len(title) && title[index] == ';'
+	}
+
+	if !isASCIILetter(rune(title[index])) {
+		return 0, false
+	}
+	index++
+	for index < len(title) && isASCIIAlphaNumeric(rune(title[index])) {
+		index++
+	}
+	return index + 1, index < len(title) && title[index] == ';'
+}
+
+func isASCIIHexDigit(value byte) bool {
+	return value >= '0' && value <= '9' ||
+		value >= 'a' && value <= 'f' ||
+		value >= 'A' && value <= 'F'
+}
+
+func cleanupCourseTitleUnderscores(title string) string {
+	if !strings.Contains(title, "_") {
+		return title
+	}
+
+	embedded := len(strings.Fields(title)) > 1
+	var cleaned strings.Builder
+	cleaned.Grow(len(title))
+	for offset := 0; offset < len(title); {
+		r, size := utf8.DecodeRuneInString(title[offset:])
+		if unicode.IsSpace(r) {
+			cleaned.WriteString(title[offset : offset+size])
+			offset += size
+			continue
+		}
+
+		end := offset + size
+		for end < len(title) {
+			r, size = utf8.DecodeRuneInString(title[end:])
+			if unicode.IsSpace(r) {
+				break
+			}
+			end += size
+		}
+		field := title[offset:end]
+		if preserveCourseTitleUnderscores(field, embedded) {
+			cleaned.WriteString(field)
+		} else {
+			cleaned.WriteString(replaceCourseTitleFieldUnderscores(field))
+		}
+		offset = end
+	}
+	return cleaned.String()
+}
+
+func replaceCourseTitleFieldUnderscores(field string) string {
+	var cleaned strings.Builder
+	cleaned.Grow(len(field))
+	for offset := 0; offset < len(field); {
+		if field[offset] != '_' {
+			_, size := utf8.DecodeRuneInString(field[offset:])
+			cleaned.WriteString(field[offset : offset+size])
+			offset += size
+			continue
+		}
+		cleaned.WriteByte(' ')
+		for offset < len(field) && field[offset] == '_' {
+			offset++
+		}
+	}
+	return cleaned.String()
+}
+
+func preserveCourseTitleUnderscores(field string, embedded bool) bool {
+	if !strings.Contains(field, "_") {
+		return false
+	}
+	if strings.Contains(field, "://") ||
+		strings.Contains(field, "@") ||
+		strings.ContainsAny(field, `/\`) ||
+		looksLikeCourseTitleDomain(strings.ReplaceAll(field, "_", "-")) {
+		return true
+	}
+	if !embedded {
+		return false
+	}
+	if strings.ContainsAny(field, "0123456789") {
+		return true
+	}
+	for _, part := range strings.Split(field, "_") {
+		if len(part) > 1 && isASCIIUppercaseIdentifierPart(part) {
+			return true
+		}
+	}
+	return false
+}
+
+func isASCIIUppercaseIdentifierPart(value string) bool {
+	hasLetter := false
+	for _, r := range value {
+		switch {
+		case r >= 'A' && r <= 'Z':
+			hasLetter = true
+		case r >= '0' && r <= '9':
+		default:
+			return false
+		}
+	}
+	return hasLetter
+}
+
+func hasVisibleCourseTitleContent(title string) bool {
+	for _, r := range title {
+		if !unicode.IsSpace(r) && !unicode.Is(unicode.Cf, r) {
+			return true
+		}
+	}
+	return false
+}
+
+func stripLeadingProviderNoise(title string) string {
+	if hasPairedOuterCourseTitleQuotes(title) {
+		return title
+	}
+
+	offset := 0
+	removed := false
+	for offset < len(title) {
+		r, size := utf8.DecodeRuneInString(title[offset:])
+		if !isCourseTitleQuote(r) {
+			break
+		}
+		offset += size
+		removed = true
+	}
+
+	ordinalStart := offset
+	for offset < len(title) && title[offset] >= '0' && title[offset] <= '9' {
+		offset++
+	}
+	if offset > ordinalStart && offset < len(title) && title[offset] == '.' {
+		offset++
+		removed = true
+	} else {
+		offset = ordinalStart
+	}
+	if !removed ||
+		offset >= len(title) ||
+		title[offset] != '[' {
+		return title
+	}
+	closeOffset := strings.IndexByte(title[offset+1:], ']')
+	if closeOffset <= 0 {
+		return title
+	}
+	return title[offset:]
+}
+
+func hasPairedOuterCourseTitleQuotes(title string) bool {
+	first, firstSize := utf8.DecodeRuneInString(title)
+	last, lastSize := utf8.DecodeLastRuneInString(title)
+	if firstSize == 0 || lastSize == 0 || len(title) <= firstSize+lastSize {
+		return false
+	}
+
+	switch first {
+	case '\'', '"':
+		return last == first
+	case '‘':
+		return last == '’'
+	case '“':
+		return last == '”'
+	case '„':
+		return last == '“' || last == '”'
+	case '«':
+		return last == '»'
+	default:
+		return false
+	}
+}
+
+func isCourseTitleQuote(r rune) bool {
+	switch r {
+	case '\'', '"', '‘', '’', '“', '”', '„', '«', '»':
+		return true
+	default:
+		return false
+	}
+}
+
+func (normalizer titleNormalizer) forceNormalizeWholeTitle(tokens []courseTitleToken) bool {
+	if normalizer.rules == nil {
+		return false
+	}
+	for _, token := range tokens {
+		if normalizer.isForcedToken(token) &&
+			(!token.protected || token.forceOverridable) {
+			return true
+		}
+	}
+	for _, phrase := range normalizer.rules.forceNormalizePhrasesCI {
+		if courseTitleContainsPhrase(tokens, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func (normalizer titleNormalizer) isForcedToken(token courseTitleToken) bool {
+	if normalizer.rules == nil || !token.word {
+		return false
+	}
+	_, forced := normalizer.rules.forceNormalizeTokensCI[strings.ToLower(token.text)]
+	return forced
+}
+
+func courseTitleContainsPhrase(tokens []courseTitleToken, phrase string) bool {
+	words := strings.Fields(phrase)
+	if len(words) == 0 {
+		return false
+	}
+	for start, token := range tokens {
+		if !token.word || token.protected || !strings.EqualFold(token.text, words[0]) {
+			continue
+		}
+		index := start
+		matches := true
+		for _, word := range words[1:] {
+			var ok bool
+			index, ok = nextWhitespaceSeparatedCourseTitleWord(tokens, index)
+			if !ok || tokens[index].protected || !strings.EqualFold(tokens[index].text, word) {
+				matches = false
+				break
+			}
+		}
+		if matches {
+			return true
+		}
+	}
+	return false
 }
 
 func (normalizer titleNormalizer) tokenize(title string) []courseTitleToken {
@@ -137,7 +458,7 @@ func (normalizer titleNormalizer) tokenize(title string) []courseTitleToken {
 				word:      true,
 				bracketed: bracketDepth > 0 || parenDepth > 0,
 			}
-			token.protected = normalizer.protectToken(token)
+			token.protected, token.forceOverridable = normalizer.protectToken(token)
 			tokens = append(tokens, token)
 			title = title[end:]
 			continue
@@ -177,6 +498,7 @@ func protectNetworkCourseTitleFields(tokens []courseTitleToken) {
 			for index := start; index < end; index++ {
 				if tokens[index].word {
 					tokens[index].protected = true
+					tokens[index].forceOverridable = false
 				}
 			}
 		}
@@ -229,30 +551,30 @@ func isCourseTitleWordRuneAt(value string, offset int) bool {
 		r == '/'
 }
 
-func (normalizer titleNormalizer) protectToken(token courseTitleToken) bool {
+func (normalizer titleNormalizer) protectToken(token courseTitleToken) (protected, forceOverridable bool) {
 	if token.bracketed {
-		return true
+		return true, false
 	}
 
 	lower := strings.ToLower(token.text)
 	if normalizer.rules != nil {
 		if _, protected := normalizer.rules.protectedTokensExact[token.text]; protected {
-			return true
+			return true, false
 		}
 		if _, protected := normalizer.rules.protectedTokensCI[lower]; protected {
-			return true
+			return true, false
 		}
 		for _, substring := range normalizer.rules.protectedSubstringsCI {
 			if strings.Contains(lower, substring) {
-				return true
+				return true, false
 			}
 		}
 	}
 	if strings.ContainsAny(token.text, "0123456789_@/:") {
-		return true
+		return true, false
 	}
 	if startsWithASCIICapital(token.text) && containsEnglishCourseTitleMarker(lower) {
-		return true
+		return true, true
 	}
 
 	letters := 0
@@ -266,19 +588,19 @@ func (normalizer titleNormalizer) protectToken(token courseTitleToken) bool {
 		if r >= 'A' && r <= 'Z' {
 			upper++
 			if index > 0 && !(index == 1 && allowUpperSHPrefix) {
-				return true
+				return true, true
 			}
 		}
 	}
-	return letters > 0 && upper == letters
+	if letters > 0 && upper == letters {
+		return true, true
+	}
+	return false, false
 }
 
-func scoreCourseTitle(tokens []courseTitleToken, forcedTokens map[int]bool) int {
+func scoreCourseTitle(tokens []courseTitleToken) int {
 	score := 0
-	for index, token := range tokens {
-		if forcedTokens[index] {
-			continue
-		}
+	for _, token := range tokens {
 		if !token.word || token.protected || !isLatinCourseTitleToken(token.text) {
 			continue
 		}
@@ -352,38 +674,6 @@ func scoreCourseTitleMarkers(value string) int {
 	return score
 }
 
-func forcedCourseTitleTokens(tokens []courseTitleToken) map[int]bool {
-	forced := make(map[int]bool)
-	for index := range tokens {
-		if tokens[index].word &&
-			!tokens[index].protected &&
-			strings.EqualFold(tokens[index].text, "freymvork") {
-			forced[index] = true
-		}
-	}
-
-	for index := range tokens {
-		if !tokens[index].word ||
-			tokens[index].protected ||
-			!strings.EqualFold(tokens[index].text, "c") {
-			continue
-		}
-		number, ok := nextWhitespaceSeparatedCourseTitleWord(tokens, index)
-		if !ok || !isASCIIDigits(tokens[number].text) {
-			continue
-		}
-		last, ok := nextWhitespaceSeparatedCourseTitleWord(tokens, number)
-		if !ok ||
-			tokens[last].protected ||
-			!strings.EqualFold(tokens[last].text, "do") {
-			continue
-		}
-		forced[index] = true
-		forced[last] = true
-	}
-	return forced
-}
-
 func nextWhitespaceSeparatedCourseTitleWord(tokens []courseTitleToken, index int) (int, bool) {
 	index++
 	if index >= len(tokens) || !courseTitleTokenIsSpace(tokens[index]) {
@@ -418,16 +708,4 @@ func isASCIILetter(r rune) bool {
 
 func isASCIIAlphaNumeric(r rune) bool {
 	return isASCIILetter(r) || r >= '0' && r <= '9'
-}
-
-func isASCIIDigits(value string) bool {
-	if value == "" {
-		return false
-	}
-	for _, r := range value {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
 }
