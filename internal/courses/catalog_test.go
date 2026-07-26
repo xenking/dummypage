@@ -294,10 +294,18 @@ func TestBuildGzipWithTitleRulesNormalizesTransliteratedTitleWithoutChangingIden
 	source := validSource(t, entry)
 	expectedID := courseID(courseIdentityKey(source.Source.ChannelID, entry))
 	rules := titleRulesForTest(t, `{
-		"schema_version":"title-normalization-rules/v1",
+		"schema_version":"title-normalization-rules/v2",
 		"protected_tokens_ci":[],
 		"protected_tokens_exact":[],
-		"protected_substrings_ci":[]
+		"protected_substrings_ci":[],
+		"force_normalize_tokens_ci":[],
+		"force_normalize_phrases_ci":[],
+		"structural_cleanup":{
+			"decode_html_entities":false,
+			"drop_zero_width_format_chars":false,
+			"underscores_as_spaces":false,
+			"strip_leading_provider_noise":false
+		}
 	}`)
 
 	var output bytes.Buffer
@@ -326,6 +334,52 @@ func TestBuildGzipWithTitleRulesNormalizesTransliteratedTitleWithoutChangingIden
 	}
 	if !slices.Contains(got.Categories, "data_ai") {
 		t.Fatalf("categories = %v, want normalized title to classify as data_ai", got.Categories)
+	}
+}
+
+func TestBuildGzipCountsCleanupOnlyTitleWithoutChangingIdentity(t *testing.T) {
+	entry := validSourceEntry()
+	entry.Title = `"'9.[Provider]_Alpha__Beta`
+	entry.RawBlock = entry.Title
+	source := validSource(t, entry)
+	expectedID := courseID(courseIdentityKey(source.Source.ChannelID, entry))
+	rules := titleRulesForTest(t, `{
+		"schema_version":"title-normalization-rules/v2",
+		"protected_tokens_ci":[],
+		"protected_tokens_exact":[],
+		"protected_substrings_ci":[],
+		"force_normalize_tokens_ci":[],
+		"force_normalize_phrases_ci":[],
+		"structural_cleanup":{
+			"decode_html_entities":true,
+			"drop_zero_width_format_chars":true,
+			"underscores_as_spaces":true,
+			"strip_leading_provider_noise":true
+		}
+	}`)
+
+	var output bytes.Buffer
+	stats, err := BuildGzipFromSourcesWithOptions(
+		[]SourceInput{{Reader: sourceReader(t, source), Name: "synthetic.json"}},
+		&output,
+		BuildOptions{TitleRules: rules},
+	)
+	if err != nil {
+		t.Fatalf("build catalog: %v", err)
+	}
+	if stats.NormalizedTitles != 1 {
+		t.Fatalf("normalized title count = %d, want 1", stats.NormalizedTitles)
+	}
+
+	got := decodeBuiltCatalog(t, &output).Entries[0]
+	if got.ID != expectedID {
+		t.Fatalf("course ID = %q, want raw-title identity %q", got.ID, expectedID)
+	}
+	if got.Title != "[Provider] Alpha Beta" {
+		t.Fatalf("title = %q, want cleanup-only title", got.Title)
+	}
+	if got.TitleOriginal == nil || *got.TitleOriginal != entry.Title {
+		t.Fatalf("title_original = %v, want raw title %q", got.TitleOriginal, entry.Title)
 	}
 }
 
@@ -433,10 +487,18 @@ func TestBuildGzipCountsMergedNormalizedTitleOnce(t *testing.T) {
 
 	var output bytes.Buffer
 	rules := titleRulesForTest(t, `{
-		"schema_version":"title-normalization-rules/v1",
+		"schema_version":"title-normalization-rules/v2",
 		"protected_tokens_ci":[],
 		"protected_tokens_exact":[],
-		"protected_substrings_ci":[]
+		"protected_substrings_ci":[],
+		"force_normalize_tokens_ci":[],
+		"force_normalize_phrases_ci":[],
+		"structural_cleanup":{
+			"decode_html_entities":false,
+			"drop_zero_width_format_chars":false,
+			"underscores_as_spaces":false,
+			"strip_leading_provider_noise":false
+		}
 	}`)
 	stats, err := BuildGzipFromSourcesWithOptions(
 		[]SourceInput{{Reader: sourceReader(t, source), Name: "synthetic.json"}},

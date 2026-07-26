@@ -1,6 +1,7 @@
 package courses
 
 import (
+	"html"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -77,21 +78,18 @@ func normalizeCourseTitle(title string) (string, bool) {
 }
 
 func (normalizer titleNormalizer) Normalize(title string) (string, bool) {
+	original := title
+	title = normalizer.cleanup(title)
 	tokens := normalizer.tokenize(title)
-	forcedTokens := forcedCourseTitleTokens(tokens)
-	score := scoreCourseTitle(tokens, forcedTokens)
-	normalizeWholeTitle := score >= 4
-	if !normalizeWholeTitle && len(forcedTokens) == 0 {
-		return title, false
+	normalizeWholeTitle := scoreCourseTitle(tokens) >= 4 ||
+		normalizer.forceNormalizeWholeTitle(tokens)
+	if !normalizeWholeTitle {
+		return title, title != original
 	}
 
 	var normalized strings.Builder
 	normalized.Grow(len(title))
-	for index, token := range tokens {
-		if !normalizeWholeTitle && !forcedTokens[index] {
-			normalized.WriteString(token.text)
-			continue
-		}
+	for _, token := range tokens {
 		if !token.word || token.protected || !isLatinCourseTitleToken(token.text) {
 			normalized.WriteString(token.text)
 			continue
@@ -102,7 +100,7 @@ func (normalizer titleNormalizer) Normalize(title string) (string, bool) {
 			strings.ToLower(token.text),
 		)
 		if err != nil {
-			return title, false
+			return original, false
 		}
 		if startsWithASCIICapital(token.text) {
 			first, size := utf8.DecodeRuneInString(value)
@@ -112,7 +110,122 @@ func (normalizer titleNormalizer) Normalize(title string) (string, bool) {
 	}
 
 	result := normalized.String()
-	return result, result != title
+	return result, result != original
+}
+
+func (normalizer titleNormalizer) cleanup(title string) string {
+	if normalizer.rules == nil {
+		return title
+	}
+	cleanup := normalizer.rules.structuralCleanup
+	if cleanup.decodeHTMLEntities {
+		title = html.UnescapeString(title)
+	}
+	if cleanup.dropZeroWidthFormatChars {
+		title = strings.Map(func(r rune) rune {
+			if unicode.Is(unicode.Cf, r) {
+				return -1
+			}
+			return r
+		}, title)
+	}
+	if cleanup.underscoresAsSpaces {
+		title = strings.ReplaceAll(title, "_", " ")
+		title = strings.Join(strings.Fields(title), " ")
+	}
+	if cleanup.stripLeadingProviderNoise {
+		title = stripLeadingProviderNoise(title)
+	}
+	return title
+}
+
+func stripLeadingProviderNoise(title string) string {
+	offset := 0
+	removed := false
+	for offset < len(title) {
+		r, size := utf8.DecodeRuneInString(title[offset:])
+		if !isCourseTitleQuote(r) {
+			break
+		}
+		offset += size
+		removed = true
+	}
+
+	ordinalStart := offset
+	for offset < len(title) && title[offset] >= '0' && title[offset] <= '9' {
+		offset++
+	}
+	if offset > ordinalStart && offset < len(title) && title[offset] == '.' {
+		offset++
+		removed = true
+	} else {
+		offset = ordinalStart
+	}
+	if !removed ||
+		offset >= len(title) ||
+		title[offset] != '[' {
+		return title
+	}
+	closeOffset := strings.IndexByte(title[offset+1:], ']')
+	if closeOffset <= 0 {
+		return title
+	}
+	return title[offset:]
+}
+
+func isCourseTitleQuote(r rune) bool {
+	switch r {
+	case '\'', '"', '‘', '’', '“', '”', '„', '«', '»':
+		return true
+	default:
+		return false
+	}
+}
+
+func (normalizer titleNormalizer) forceNormalizeWholeTitle(tokens []courseTitleToken) bool {
+	if normalizer.rules == nil {
+		return false
+	}
+	for _, token := range tokens {
+		if !token.word {
+			continue
+		}
+		if _, forced := normalizer.rules.forceNormalizeTokensCI[strings.ToLower(token.text)]; forced {
+			return true
+		}
+	}
+	for _, phrase := range normalizer.rules.forceNormalizePhrasesCI {
+		if courseTitleContainsPhrase(tokens, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func courseTitleContainsPhrase(tokens []courseTitleToken, phrase string) bool {
+	words := strings.Fields(phrase)
+	if len(words) == 0 {
+		return false
+	}
+	for start, token := range tokens {
+		if !token.word || !strings.EqualFold(token.text, words[0]) {
+			continue
+		}
+		index := start
+		matches := true
+		for _, word := range words[1:] {
+			var ok bool
+			index, ok = nextWhitespaceSeparatedCourseTitleWord(tokens, index)
+			if !ok || !strings.EqualFold(tokens[index].text, word) {
+				matches = false
+				break
+			}
+		}
+		if matches {
+			return true
+		}
+	}
+	return false
 }
 
 func (normalizer titleNormalizer) tokenize(title string) []courseTitleToken {
@@ -273,12 +386,9 @@ func (normalizer titleNormalizer) protectToken(token courseTitleToken) bool {
 	return letters > 0 && upper == letters
 }
 
-func scoreCourseTitle(tokens []courseTitleToken, forcedTokens map[int]bool) int {
+func scoreCourseTitle(tokens []courseTitleToken) int {
 	score := 0
-	for index, token := range tokens {
-		if forcedTokens[index] {
-			continue
-		}
+	for _, token := range tokens {
 		if !token.word || token.protected || !isLatinCourseTitleToken(token.text) {
 			continue
 		}
@@ -352,38 +462,6 @@ func scoreCourseTitleMarkers(value string) int {
 	return score
 }
 
-func forcedCourseTitleTokens(tokens []courseTitleToken) map[int]bool {
-	forced := make(map[int]bool)
-	for index := range tokens {
-		if tokens[index].word &&
-			!tokens[index].protected &&
-			strings.EqualFold(tokens[index].text, "freymvork") {
-			forced[index] = true
-		}
-	}
-
-	for index := range tokens {
-		if !tokens[index].word ||
-			tokens[index].protected ||
-			!strings.EqualFold(tokens[index].text, "c") {
-			continue
-		}
-		number, ok := nextWhitespaceSeparatedCourseTitleWord(tokens, index)
-		if !ok || !isASCIIDigits(tokens[number].text) {
-			continue
-		}
-		last, ok := nextWhitespaceSeparatedCourseTitleWord(tokens, number)
-		if !ok ||
-			tokens[last].protected ||
-			!strings.EqualFold(tokens[last].text, "do") {
-			continue
-		}
-		forced[index] = true
-		forced[last] = true
-	}
-	return forced
-}
-
 func nextWhitespaceSeparatedCourseTitleWord(tokens []courseTitleToken, index int) (int, bool) {
 	index++
 	if index >= len(tokens) || !courseTitleTokenIsSpace(tokens[index]) {
@@ -418,16 +496,4 @@ func isASCIILetter(r rune) bool {
 
 func isASCIIAlphaNumeric(r rune) bool {
 	return isASCIILetter(r) || r >= '0' && r <= '9'
-}
-
-func isASCIIDigits(value string) bool {
-	if value == "" {
-		return false
-	}
-	for _, r := range value {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
 }

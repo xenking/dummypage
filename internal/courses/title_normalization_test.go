@@ -1,6 +1,9 @@
 package courses
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestTitleNormalizerTransliteratesGenericTitles(t *testing.T) {
 	tests := []struct {
@@ -89,6 +92,7 @@ func TestTitleNormalizerUsesLoadedProtectionRules(t *testing.T) {
 		protectedSubstringsCI: []string{
 			"academy",
 		},
+		forceNormalizeTokensCI: map[string]struct{}{},
 	}
 	tests := []struct {
 		name  string
@@ -193,7 +197,71 @@ func TestTitleNormalizerProtectsNonTransliterationTokens(t *testing.T) {
 	}
 }
 
-func TestTitleNormalizerReviewRegressions(t *testing.T) {
+func TestTitleNormalizerHasNoHardcodedForceRules(t *testing.T) {
+	input := "Neutral klyuchmarker guide"
+	got, changed := newTitleNormalizer(nil).Normalize(input)
+	if got != input || changed {
+		t.Fatalf("Normalize(%q) = (%q, %t), want unchanged without private rules", input, got, changed)
+	}
+}
+
+func TestTitleNormalizerForceRulesNormalizeWholeTitle(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+		rules *TitleRules
+	}{
+		{
+			name:  "force token",
+			input: "Neutral klyuchmarker guide",
+			want:  "Неутрал ключмаркер гуиде",
+			rules: &TitleRules{
+				forceNormalizeTokensCI: map[string]struct{}{"klyuchmarker": {}},
+			},
+		},
+		{
+			name:  "case insensitive force phrase",
+			input: "Neutral Novyiy stil guide",
+			want:  "Неутрал Новый стил гуиде",
+			rules: &TitleRules{
+				forceNormalizeTokensCI:  map[string]struct{}{},
+				forceNormalizePhrasesCI: []string{"novyiy stil"},
+			},
+		},
+		{
+			name:  "protected technical and network tokens",
+			input: "Neutral klyuchmarker C++ .NET 1C JavaScript React.js https://example.test/put [Provider Name] guide",
+			want:  "Неутрал ключмаркер C++ .NET 1C JavaScript React.js https://example.test/put [Provider Name] гуиде",
+			rules: &TitleRules{
+				forceNormalizeTokensCI: map[string]struct{}{"klyuchmarker": {}},
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, changed := newTitleNormalizer(test.rules).Normalize(test.input)
+			if got != test.want {
+				t.Fatalf("Normalize(%q) = %q, want %q", test.input, got, test.want)
+			}
+			if !changed {
+				t.Fatalf("Normalize(%q) changed = false, want true", test.input)
+			}
+		})
+	}
+}
+
+func TestTitleNormalizerStructuralCleanup(t *testing.T) {
+	rules := &TitleRules{
+		forceNormalizeTokensCI: map[string]struct{}{},
+		structuralCleanup: titleStructuralCleanup{
+			decodeHTMLEntities:        true,
+			dropZeroWidthFormatChars:  true,
+			underscoresAsSpaces:       true,
+			stripLeadingProviderNoise: true,
+		},
+	}
 	tests := []struct {
 		name    string
 		input   string
@@ -201,17 +269,87 @@ func TestTitleNormalizerReviewRegressions(t *testing.T) {
 		changed bool
 	}{
 		{
-			name:    "forced transliteration leaves English context alone",
-			input:   "English freymvork guide",
-			want:    "English фреймворк guide",
+			name:    "entity filename noise and provider prefix",
+			input:   `"'9.[Provider]_Kurs&nbsp;dlya​ novichkov`,
+			want:    "[Provider] Курс для новичков",
 			changed: true,
 		},
 		{
-			name:    "forced c number do leaves English context alone",
-			input:   "English c 0 do guide",
-			want:    "English с 0 до guide",
+			name:    "cleanup only counts as change",
+			input:   "Alpha__Beta",
+			want:    "Alpha Beta",
 			changed: true,
 		},
+		{
+			name:    "malformed entity unchanged",
+			input:   "Fish &bogus; Chips",
+			want:    "Fish &bogus; Chips",
+			changed: false,
+		},
+		{
+			name:    "stray quote without bracketed provider stays",
+			input:   `'English guide`,
+			want:    `'English guide`,
+			changed: false,
+		},
+		{
+			name:    "ordinal without bracketed provider stays",
+			input:   "12.English guide",
+			want:    "12.English guide",
+			changed: false,
+		},
+	}
+
+	normalizer := newTitleNormalizer(rules)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, changed := normalizer.Normalize(test.input)
+			if got != test.want {
+				t.Fatalf("Normalize(%q) = %q, want %q", test.input, got, test.want)
+			}
+			if changed != test.changed {
+				t.Fatalf("Normalize(%q) changed = %t, want %t", test.input, changed, test.changed)
+			}
+		})
+	}
+}
+
+func TestTitleNormalizerIsIdempotent(t *testing.T) {
+	rules, err := LoadTitleRules(strings.NewReader(`{
+		"schema_version": "title-normalization-rules/v2",
+		"protected_tokens_ci": [],
+		"protected_tokens_exact": [],
+		"protected_substrings_ci": [],
+		"force_normalize_tokens_ci": ["klyuchmarker"],
+		"force_normalize_phrases_ci": [],
+		"structural_cleanup": {
+			"decode_html_entities": true,
+			"drop_zero_width_format_chars": true,
+			"underscores_as_spaces": true,
+			"strip_leading_provider_noise": true
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("load rules: %v", err)
+	}
+	normalizer := newTitleNormalizer(rules)
+	first, changed := normalizer.Normalize(`7.[Provider]_Kurs dlya klyuchmarker`)
+	if !changed {
+		t.Fatal("first Normalize() changed = false, want true")
+	}
+	second, changed := normalizer.Normalize(first)
+	if second != first || changed {
+		t.Fatalf("second Normalize() = (%q, %t), want (%q, false)", second, changed, first)
+	}
+}
+
+func TestTitleNormalizerReviewRegressions(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    string
+		changed bool
+	}{
 		{
 			name:  "marker scoring uses longest non-overlapping occurrences",
 			input: "Maya Bay Kayak",
