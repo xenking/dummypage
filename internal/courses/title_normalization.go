@@ -124,7 +124,7 @@ func (normalizer titleNormalizer) cleanup(title string) string {
 	original := title
 	cleanup := normalizer.rules.structuralCleanup
 	if cleanup.decodeHTMLEntities {
-		title = html.UnescapeString(title)
+		title = unescapeStrictCourseTitleEntities(title)
 	}
 	if cleanup.dropZeroWidthFormatChars {
 		title = strings.Map(func(r rune) rune {
@@ -144,6 +144,74 @@ func (normalizer titleNormalizer) cleanup(title string) string {
 		return original
 	}
 	return title
+}
+
+func unescapeStrictCourseTitleEntities(title string) string {
+	if !strings.Contains(title, "&") {
+		return title
+	}
+
+	var decoded strings.Builder
+	decoded.Grow(len(title))
+	for offset := 0; offset < len(title); {
+		relativeAmpersand := strings.IndexByte(title[offset:], '&')
+		if relativeAmpersand < 0 {
+			decoded.WriteString(title[offset:])
+			break
+		}
+
+		ampersand := offset + relativeAmpersand
+		decoded.WriteString(title[offset:ampersand])
+		end, ok := strictCourseTitleEntityEnd(title, ampersand)
+		if !ok {
+			decoded.WriteByte('&')
+			offset = ampersand + 1
+			continue
+		}
+		decoded.WriteString(html.UnescapeString(title[ampersand:end]))
+		offset = end
+	}
+	return decoded.String()
+}
+
+func strictCourseTitleEntityEnd(title string, ampersand int) (int, bool) {
+	index := ampersand + 1
+	if index >= len(title) {
+		return 0, false
+	}
+
+	if title[index] == '#' {
+		index++
+		if index < len(title) && (title[index] == 'x' || title[index] == 'X') {
+			index++
+			digitsStart := index
+			for index < len(title) && isASCIIHexDigit(title[index]) {
+				index++
+			}
+			return index + 1, index > digitsStart && index < len(title) && title[index] == ';'
+		}
+
+		digitsStart := index
+		for index < len(title) && title[index] >= '0' && title[index] <= '9' {
+			index++
+		}
+		return index + 1, index > digitsStart && index < len(title) && title[index] == ';'
+	}
+
+	if !isASCIILetter(rune(title[index])) {
+		return 0, false
+	}
+	index++
+	for index < len(title) && isASCIIAlphaNumeric(rune(title[index])) {
+		index++
+	}
+	return index + 1, index < len(title) && title[index] == ';'
+}
+
+func isASCIIHexDigit(value byte) bool {
+	return value >= '0' && value <= '9' ||
+		value >= 'a' && value <= 'f' ||
+		value >= 'A' && value <= 'F'
 }
 
 func cleanupCourseTitleUnderscores(title string) string {
@@ -247,6 +315,10 @@ func hasVisibleCourseTitleContent(title string) bool {
 }
 
 func stripLeadingProviderNoise(title string) string {
+	if hasPairedOuterCourseTitleQuotes(title) {
+		return title
+	}
+
 	offset := 0
 	removed := false
 	for offset < len(title) {
@@ -278,6 +350,29 @@ func stripLeadingProviderNoise(title string) string {
 		return title
 	}
 	return title[offset:]
+}
+
+func hasPairedOuterCourseTitleQuotes(title string) bool {
+	first, firstSize := utf8.DecodeRuneInString(title)
+	last, lastSize := utf8.DecodeLastRuneInString(title)
+	if firstSize == 0 || lastSize == 0 || len(title) <= firstSize+lastSize {
+		return false
+	}
+
+	switch first {
+	case '\'', '"':
+		return last == first
+	case '‘':
+		return last == '’'
+	case '“':
+		return last == '”'
+	case '„':
+		return last == '“' || last == '”'
+	case '«':
+		return last == '»'
+	default:
+		return false
+	}
 }
 
 func isCourseTitleQuote(r rune) bool {

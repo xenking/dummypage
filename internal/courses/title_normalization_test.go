@@ -447,6 +447,30 @@ func TestTitleNormalizerStructuralCleanup(t *testing.T) {
 			changed: false,
 		},
 		{
+			name:    "semicolonless entity-like URL query remains exact",
+			input:   "https://example.test/?asset=1&copy=2",
+			want:    "https://example.test/?asset=1&copy=2",
+			changed: false,
+		},
+		{
+			name:    "strict named entity is decoded",
+			input:   "Alpha &amp; Beta",
+			want:    "Alpha & Beta",
+			changed: true,
+		},
+		{
+			name:    "strict decimal numeric entity is decoded",
+			input:   "Alpha &#169; Beta",
+			want:    "Alpha © Beta",
+			changed: true,
+		},
+		{
+			name:    "strict hexadecimal numeric entity is decoded",
+			input:   "Alpha &#xA9; Beta",
+			want:    "Alpha © Beta",
+			changed: true,
+		},
+		{
 			name:    "format-only cleanup falls back to original",
 			input:   "\u200b",
 			want:    "\u200b",
@@ -462,6 +486,18 @@ func TestTitleNormalizerStructuralCleanup(t *testing.T) {
 			name:    "stray quote without bracketed provider stays",
 			input:   `'English guide`,
 			want:    `'English guide`,
+			changed: false,
+		},
+		{
+			name:    "paired outer quotes around provider title stay balanced",
+			input:   `"[Provider] Course"`,
+			want:    `"[Provider] Course"`,
+			changed: false,
+		},
+		{
+			name:    "paired curly outer quotes around provider title stay balanced",
+			input:   `“[Provider] Course”`,
+			want:    `“[Provider] Course”`,
 			changed: false,
 		},
 		{
