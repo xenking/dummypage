@@ -7,7 +7,7 @@ const test = require("node:test");
 
 const coursesCSS = readFileSync(
   path.resolve(__dirname, "../static/css/courses.css"),
-  "utf8",
+  "utf8"
 );
 
 test("course result titles keep readable leading at every breakpoint", () => {
@@ -22,7 +22,7 @@ test("course result titles keep readable leading at every breakpoint", () => {
     const lineHeight = Number(match[1]);
     assert.ok(
       lineHeight >= 1.3,
-      `.result-title line-height ${lineHeight} is below the readable 1.3 minimum`,
+      `.result-title line-height ${lineHeight} is below the readable 1.3 minimum`
     );
   }
 });
