@@ -11,10 +11,29 @@ const ACTIVE_VERSION_KEY = "activeVersion";
 const CATALOG_SCHEMA = "courses-catalog/v2";
 const INDEX_BATCH_SIZE = 500;
 const MAX_RESULT_LIMIT = 500;
+const MAX_LINK_CONTENT_ITEMS = 1000;
 const ZERO_WIDTH_PATTERN = /[\u200b-\u200d\u2060\ufeff]/g;
 const SPACE_PATTERN = /\s+/g;
 const MUTATING_REQUESTS = new Set(["boot", "import", "forget"]);
 const SORT_FIELDS = new Set(["relevance", "title", "author", "year", "added_at"]);
+const LINK_CONTENT_FIELDS = new Set([
+  "name",
+  "kind",
+  "size_bytes",
+  "file_count",
+  "folder_count",
+  "items",
+  "material_types",
+]);
+const LINK_CONTENT_ITEM_FIELDS = new Set(["name", "kind", "size_bytes"]);
+const LINK_CONTENT_MATERIAL_TYPES = new Set([
+  "archive",
+  "audio",
+  "document",
+  "image",
+  "torrent",
+  "video",
+]);
 const collator = new Intl.Collator(["ru", "en"], {
   sensitivity: "base",
   numeric: true,
@@ -128,6 +147,77 @@ function validateTimestamp(value, description) {
   if (Number.isNaN(Date.parse(value))) invalidCatalog(description + " must be a valid timestamp");
 }
 
+function validateKnownFields(value, allowed, description) {
+  for (const field of Object.keys(value)) {
+    if (!allowed.has(field)) {
+      invalidCatalog(description + " contains unknown field " + field);
+    }
+  }
+}
+
+function validateOptionalTrimmedString(value, field, description) {
+  if (!Object.hasOwn(value, field)) return;
+  if (
+    typeof value[field] !== "string"
+    || value[field] === ""
+    || value[field].trim() !== value[field]
+  ) {
+    invalidCatalog(description + "." + field + " must be a non-empty trimmed string");
+  }
+}
+
+function validateOptionalSafeInteger(value, field, description) {
+  if (!Object.hasOwn(value, field)) return;
+  if (!Number.isSafeInteger(value[field]) || value[field] < 0) {
+    invalidCatalog(description + "." + field + " must be a non-negative safe integer");
+  }
+}
+
+function validateLinkContentItem(item, description) {
+  if (!isObject(item)) invalidCatalog(description + " must be an object");
+  validateKnownFields(item, LINK_CONTENT_ITEM_FIELDS, description);
+  validateOptionalTrimmedString(item, "name", description);
+  validateOptionalTrimmedString(item, "kind", description);
+  validateOptionalSafeInteger(item, "size_bytes", description);
+}
+
+function validateLinkContent(content, description) {
+  if (!isObject(content)) invalidCatalog(description + " must be an object");
+  validateKnownFields(content, LINK_CONTENT_FIELDS, description);
+  validateOptionalTrimmedString(content, "name", description);
+  validateOptionalTrimmedString(content, "kind", description);
+  validateOptionalSafeInteger(content, "size_bytes", description);
+  validateOptionalSafeInteger(content, "file_count", description);
+  validateOptionalSafeInteger(content, "folder_count", description);
+
+  if (Object.hasOwn(content, "items")) {
+    if (!Array.isArray(content.items)) invalidCatalog(description + ".items must be an array");
+    if (content.items.length > MAX_LINK_CONTENT_ITEMS) {
+      invalidCatalog(description + ".items exceeds limit");
+    }
+    for (let index = 0; index < content.items.length; index += 1) {
+      validateLinkContentItem(content.items[index], description + ".items[" + index + "]");
+    }
+  }
+
+  if (Object.hasOwn(content, "material_types")) {
+    if (!Array.isArray(content.material_types)) {
+      invalidCatalog(description + ".material_types must be an array");
+    }
+    let previous = null;
+    for (let index = 0; index < content.material_types.length; index += 1) {
+      const materialType = content.material_types[index];
+      if (typeof materialType !== "string" || !LINK_CONTENT_MATERIAL_TYPES.has(materialType)) {
+        invalidCatalog(description + ".material_types[" + index + "] is unknown");
+      }
+      if (previous !== null && previous >= materialType) {
+        invalidCatalog(description + ".material_types must be sorted and unique");
+      }
+      previous = materialType;
+    }
+  }
+}
+
 function validateLink(link, description) {
   if (!isObject(link)) invalidCatalog(description + " must be an object");
   requireString(link.url, description + ".url");
@@ -138,6 +228,9 @@ function validateLink(link, description) {
   if (typeof link.primary !== "boolean") invalidCatalog(description + ".primary must be a boolean");
   if (link.label != null && typeof link.label !== "string") {
     invalidCatalog(description + ".label must be a string or null");
+  }
+  if (Object.hasOwn(link, "content")) {
+    validateLinkContent(link.content, description + ".content");
   }
 }
 
@@ -337,6 +430,16 @@ function buildSearchText(entry, derived, categoryDefinitions, formatDefinitions)
       link.kind,
       link.role,
     );
+    if (link.content) {
+      parts.push(
+        link.content.name,
+        link.content.kind,
+        ...(link.content.material_types || []),
+      );
+      for (const item of link.content.items || []) {
+        parts.push(item.name, item.kind);
+      }
+    }
   }
   for (const source of entry.sources) {
     parts.push(

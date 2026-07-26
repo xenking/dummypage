@@ -124,6 +124,19 @@ const catalog = {
         role: "primary",
         primary: true,
         label: null,
+        content: {
+          name: "bundle-marker-340",
+          kind: "folder-marker-341",
+          size_bytes: 1610612736,
+          file_count: 4,
+          folder_count: 1,
+          items: [{
+            name: "lesson-marker-342.mp4",
+            kind: "video-marker-343",
+            size_bytes: 1073741824,
+          }],
+          material_types: ["archive", "video"],
+        },
       }],
       passwords: ["password-marker-335"],
       notes: ["note-marker-336"],
@@ -369,6 +382,11 @@ const catalog = {
     "origin marker 337",
     "availability marker 338",
     "format source marker 339",
+    "bundle marker 340",
+    "folder marker 341",
+    "lesson marker 342",
+    "video marker 343",
+    "archive",
     "2019 08 17",
   ]) {
     const allFields = await client.request("search", {
@@ -484,6 +502,68 @@ const catalog = {
       && invalidOriginalImport.error.code === "INVALID_CATALOG",
     "non-string title_original accepted",
   );
+
+  function catalogWithContent(content) {
+    return {
+      ...catalog,
+      entries: [{
+        ...catalog.entries[0],
+        links: [{ ...catalog.entries[0].links[0], content }],
+      }],
+    };
+  }
+
+  const validSparseContentCases = [
+    ["empty", {}],
+    ["zero values", { size_bytes: 0, file_count: 0, folder_count: 0 }],
+    ["material type only", { material_types: ["archive"] }],
+    ["empty item", { items: [{}] }],
+  ];
+  for (const [name, content] of validSparseContentCases) {
+    const accepted = await client.request("import", {
+      catalog: catalogWithContent(content),
+      meta: { version: "fixture-sparse-content-" + name },
+      version: "fixture-sparse-content-" + name,
+    });
+    expect(accepted.ok === true, name + " valid sparse content was rejected");
+  }
+  const restored = await client.request("import", {
+    catalog,
+    meta: { available: true, schema: "courses-catalog/v2", version: "fixture-v2" },
+    version: "fixture-v2",
+  });
+  expect(restored.ok === true, "fixture was not restored after sparse content checks");
+
+  const invalidContentCases = [
+    ["empty name", { name: "", file_count: 1 }],
+    ["unknown content field", { name: "Bundle", raw_html: "private" }],
+    ["unknown item field", { name: "Bundle", items: [{ name: "one", url: "private" }] }],
+    ["untrimmed name", { name: " Bundle" }],
+    ["wrong name type", { name: 42 }],
+    ["negative size", { name: "Bundle", size_bytes: -1 }],
+    ["unsafe file count", { name: "Bundle", file_count: Number.MAX_SAFE_INTEGER + 1 }],
+    ["fractional folder count", { name: "Bundle", folder_count: 1.5 }],
+    ["wrong items type", { name: "Bundle", items: {} }],
+    ["too many items", { name: "Bundle", items: Array.from({ length: 1001 }, () => ({})) }],
+    ["untrimmed item kind", { name: "Bundle", items: [{ kind: " file" }] }],
+    ["wrong item name type", { name: "Bundle", items: [{ name: 42 }] }],
+    ["negative item size", { name: "Bundle", items: [{ size_bytes: -1 }] }],
+    ["wrong material types type", { name: "Bundle", material_types: "video" }],
+    ["unknown material type", { name: "Bundle", material_types: ["binary"] }],
+    ["unsorted material types", { name: "Bundle", material_types: ["video", "archive"] }],
+    ["duplicate material types", { name: "Bundle", material_types: ["video", "video"] }],
+  ];
+  for (const [name, content] of invalidContentCases) {
+    const rejected = await client.request("import", {
+      catalog: catalogWithContent(content),
+      meta: { version: "fixture-invalid-content-" + name },
+      version: "fixture-invalid-content-" + name,
+    });
+    expect(
+      rejected.ok === false && rejected.error.code === "INVALID_CATALOG",
+      name + " was accepted",
+    );
+  }
 
   const afterInvalid = await client.request("search", {
     query: "елка",

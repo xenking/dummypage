@@ -5,7 +5,16 @@
     const SEARCH_DELAY_MS = 90;
     const RPC_TIMEOUT_MS = 120_000;
     const MOBILE_BREAKPOINT = 1120;
+    const CONTENT_ITEM_PREVIEW_LIMIT = 3;
     const ALLOWED_PROTOCOLS = new Set(["http:", "https:", "magnet:"]);
+    const MATERIAL_TYPE_LABELS = Object.freeze({
+        archive: "архив",
+        audio: "аудио",
+        document: "документы",
+        image: "изображения",
+        torrent: "торрент",
+        video: "видео",
+    });
     const PHASE_LABELS = {
         opening: "Открываем локальную базу…",
         reading: "Читаем snapshot…",
@@ -100,8 +109,9 @@
             hasPassword: null,
         },
         sort: {
-            field: "relevance",
+            field: "added_at",
             direction: "desc",
+            explicit: false,
         },
         query: "",
         total: 0,
@@ -234,6 +244,75 @@
         }
         const digits = unit === 0 || amount >= 10 ? 0 : 1;
         return `${amount.toLocaleString("ru-RU", { maximumFractionDigits: digits })} ${units[unit]}`;
+    }
+
+    function russianCount(value, forms) {
+        const number = Number(value);
+        const absolute = Math.abs(number);
+        const lastTwo = absolute % 100;
+        const last = absolute % 10;
+        let form = forms.many;
+        if (lastTwo < 11 || lastTwo > 14) {
+            if (last === 1) {
+                form = forms.one;
+            } else if (last >= 2 && last <= 4) {
+                form = forms.few;
+            }
+        }
+        return `${russianNumber(number)} ${form}`;
+    }
+
+    function formatLinkContentSummary(content) {
+        if (!content || typeof content !== "object" || Array.isArray(content)) {
+            return "";
+        }
+        const parts = [];
+        const name = typeof content.name === "string" && content.name
+            ? content.name
+            : typeof content.kind === "string"
+                ? content.kind
+                : "";
+        if (name) {
+            parts.push(name);
+        }
+        if (Number.isSafeInteger(content.size_bytes) && content.size_bytes >= 0) {
+            parts.push(formatBytes(content.size_bytes));
+        }
+        if (Number.isSafeInteger(content.file_count) && content.file_count >= 0) {
+            parts.push(russianCount(content.file_count, {
+                one: "файл",
+                few: "файла",
+                many: "файлов",
+            }));
+        }
+        if (Number.isSafeInteger(content.folder_count) && content.folder_count >= 0) {
+            parts.push(russianCount(content.folder_count, {
+                one: "папка",
+                few: "папки",
+                many: "папок",
+            }));
+        }
+
+        const materialLabels = Array.isArray(content.material_types)
+            ? content.material_types
+                .map((materialType) => MATERIAL_TYPE_LABELS[materialType])
+                .filter(Boolean)
+            : [];
+        if (materialLabels.length) {
+            parts.push(materialLabels.join(", "));
+        }
+
+        const itemNames = Array.isArray(content.items)
+            ? content.items
+                .map((item) => typeof item?.name === "string" ? item.name : "")
+                .filter(Boolean)
+            : [];
+        if (itemNames.length) {
+            const preview = itemNames.slice(0, CONTENT_ITEM_PREVIEW_LIMIT).join(", ");
+            const remaining = itemNames.length - CONTENT_ITEM_PREVIEW_LIMIT;
+            parts.push(remaining > 0 ? `${preview} +${remaining}` : preview);
+        }
+        return parts.join(" · ");
     }
 
     function formatDate(value, includeTime = false) {
@@ -718,6 +797,7 @@
             return;
         }
 
+        syncAutomaticSort();
         const generation = reset ? ++state.searchGeneration : state.searchGeneration;
         const offset = reset ? 0 : state.offset;
         state.loadingSearch = true;
@@ -957,15 +1037,31 @@
             const label = link.label || link.host || link.provider || `Ссылка ${index + 1}`;
             const value = createElement("p", "link-value", `${index + 1}. ${label} · ${link.safeURL}`);
             value.title = link.safeURL;
+            const copy = createElement("div", "link-copy");
+            copy.append(value);
+            const contentSummary = formatLinkContentSummary(link.content);
+            if (contentSummary) {
+                const summary = createElement(
+                    "p",
+                    "link-value link-content-summary",
+                    contentSummary,
+                );
+                summary.title = contentSummary;
+                copy.append(summary);
+            }
             const actions = createElement("div", "row-actions");
             const open = createElement("button", "button button--quiet", "Открыть");
             open.type = "button";
             open.addEventListener("click", () => openExternal(link.safeURL));
-            const copy = createElement("button", "button button--quiet", "Копировать");
-            copy.type = "button";
-            copy.addEventListener("click", () => void copyText(link.safeURL, "Ссылка скопирована", copy));
-            actions.append(open, copy);
-            item.append(value, actions);
+            const copyButton = createElement("button", "button button--quiet", "Копировать");
+            copyButton.type = "button";
+            copyButton.addEventListener("click", () => void copyText(
+                link.safeURL,
+                "Ссылка скопирована",
+                copyButton,
+            ));
+            actions.append(open, copyButton);
+            item.append(copy, actions);
             list.append(item);
         }
         section.append(list);
@@ -1454,6 +1550,7 @@
 
         dom.sortSelect.addEventListener("change", () => {
             state.sort.field = dom.sortSelect.value;
+            state.sort.explicit = true;
             if (state.sort.field === "title" || state.sort.field === "author") {
                 state.sort.direction = "asc";
             } else {
@@ -1464,6 +1561,7 @@
         });
 
         dom.sortDirection.addEventListener("click", () => {
+            state.sort.explicit = true;
             state.sort.direction = state.sort.direction === "asc" ? "desc" : "asc";
             syncSortDirection();
             void runSearch(true);
@@ -1637,6 +1735,16 @@
             "aria-label",
             `Направление сортировки: ${ascending ? "по возрастанию" : "по убыванию"}`,
         );
+    }
+
+    function syncAutomaticSort() {
+        if (state.sort.explicit) {
+            return;
+        }
+        state.sort.field = state.query.trim() ? "relevance" : "added_at";
+        state.sort.direction = "desc";
+        dom.sortSelect.value = state.sort.field;
+        syncSortDirection();
     }
 
     function debounce(callback, delay) {
