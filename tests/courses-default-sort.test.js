@@ -1,3 +1,4 @@
+/* jshint esversion: 6, node: true */
 const assert = require("node:assert/strict");
 const { spawn } = require("node:child_process");
 const { mkdtemp, readFile, rm } = require("node:fs/promises");
