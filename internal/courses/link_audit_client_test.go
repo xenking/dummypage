@@ -165,6 +165,7 @@ func TestAuditCatalogLinksHTTPExecution(t *testing.T) {
 	policy := testLinkAuditPolicy()
 	policy.Concurrency = 2
 	policy.MaxBodyBytes = 4
+	policy.Rules[0].DeadStatuses = append(policy.Rules[0].DeadStatuses, http.StatusMethodNotAllowed)
 	catalog := Catalog{Entries: []CatalogEntry{{
 		Title: "secret title",
 		Links: []CatalogLink{
@@ -189,6 +190,7 @@ func TestAuditCatalogLinksHTTPExecution(t *testing.T) {
 			"HEAD https://cdn.example.test/body":             {{status: 200, body: "ignored"}},
 			"GET https://cdn.example.test/body":              {{status: 200, body: "nope-with-extra-bytes"}},
 			"HEAD https://cdn.example.test/gone":             {{status: 404, body: "gone"}},
+			"GET https://cdn.example.test/gone":              {{status: 404, body: "gone"}},
 			"HEAD https://cdn.example.test/head-not-allowed": {{status: 405, body: "no head"}},
 			"GET https://cdn.example.test/head-not-allowed":  {{status: 200, body: "course page download"}},
 		},
@@ -212,8 +214,8 @@ func TestAuditCatalogLinksHTTPExecution(t *testing.T) {
 	if client.maxActive.Load() > int32(policy.Concurrency) {
 		t.Fatalf("max active = %d, want <= %d", client.maxActive.Load(), policy.Concurrency)
 	}
-	if got := client.count("GET https://cdn.example.test/gone"); got != 0 {
-		t.Fatalf("GET after HEAD 404 count = %d, want 0", got)
+	if got := client.count("GET https://cdn.example.test/gone"); got != 1 {
+		t.Fatalf("GET after HEAD 404 count = %d, want 1", got)
 	}
 	bodyReq := client.request("GET https://cdn.example.test/body")
 	if bodyReq == nil {
@@ -224,6 +226,32 @@ func TestAuditCatalogLinksHTTPExecution(t *testing.T) {
 	}
 	if got := bodyReq.Header.Get("Accept-Encoding"); got != "identity" {
 		t.Fatalf("Accept-Encoding = %q, want identity", got)
+	}
+	if got := client.count("GET https://cdn.example.test/body"); got != 1 {
+		t.Fatalf("body-rule GET requests = %d, want 1", got)
+	}
+	goneReq := client.request("GET https://cdn.example.test/gone")
+	if goneReq == nil {
+		t.Fatal("dead-status verification GET request missing")
+	}
+	if got := goneReq.Header.Get("Range"); got != "bytes=0-3" {
+		t.Fatalf("dead-status verification Range = %q, want bytes=0-3", got)
+	}
+	if got := goneReq.Header.Get("Accept-Encoding"); got != "identity" {
+		t.Fatalf("dead-status verification Accept-Encoding = %q, want identity", got)
+	}
+	fallbackReq := client.request("GET https://cdn.example.test/head-not-allowed")
+	if fallbackReq == nil {
+		t.Fatal("fallback GET request missing")
+	}
+	if got := client.count("GET https://cdn.example.test/head-not-allowed"); got != 1 {
+		t.Fatalf("overlapping fallback/dead-status GET requests = %d, want 1", got)
+	}
+	if got := fallbackReq.Header.Get("Range"); got != "bytes=0-3" {
+		t.Fatalf("fallback Range = %q, want bytes=0-3", got)
+	}
+	if got := fallbackReq.Header.Get("Accept-Encoding"); got != "identity" {
+		t.Fatalf("fallback Accept-Encoding = %q, want identity", got)
 	}
 	if got := client.closedBodies.Load(); got < 5 {
 		t.Fatalf("closed bodies = %d, want all responses closed", got)
@@ -236,6 +264,10 @@ func TestAuditCatalogLinksHTTPExecution(t *testing.T) {
 	}
 	if body.CheckedAt != "2026-07-26T02:00:00Z" {
 		t.Fatalf("CheckedAt = %q, want UTC now", body.CheckedAt)
+	}
+	fallback := byHash[mustLinkHash(t, "https://cdn.example.test/head-not-allowed")]
+	if fallback.State != LinkAuditStateContentMismatch || fallback.Reason != LinkAuditReasonRequiredBodyMissing {
+		t.Fatalf("fallback result = %+v, want required-body mismatch", fallback)
 	}
 	if result := byHash[mustLinkHash(t, "https://other.example.test/error")]; result.Reason != LinkAuditReasonTransportDNS {
 		t.Fatalf("transport result = %+v, want DNS transient", result)
@@ -317,6 +349,514 @@ func TestLinkAuditStatusOnlyFallbackUsesOneByteGET(t *testing.T) {
 			}
 			if got := readBytes.Load(); got > 1 {
 				t.Fatalf("response body bytes read = %d, want <= 1", got)
+			}
+		})
+	}
+}
+
+func TestLinkAuditStatusOnlyDeadHEADRetriesRangeNotSatisfiableOnce(t *testing.T) {
+	tests := []struct {
+		name        string
+		retryStatus int
+		wantState   LinkAuditState
+		wantReason  LinkAuditReason
+	}{
+		{
+			name:        "empty resource is live",
+			retryStatus: http.StatusOK,
+			wantState:   LinkAuditStateLive,
+			wantReason:  LinkAuditReasonOK,
+		},
+		{
+			name:        "second range failure is not retried",
+			retryStatus: http.StatusRequestedRangeNotSatisfiable,
+			wantState:   LinkAuditStateUnknown,
+			wantReason:  LinkAuditReasonUnhandledHTTPStatus,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			policy := &LinkAuditPolicy{MaxBodyBytes: 64}
+			var getRequests atomic.Int32
+			getHeaders := make(chan http.Header, 2)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodHead {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				requestNumber := getRequests.Add(1)
+				select {
+				case getHeaders <- r.Header.Clone():
+				default:
+				}
+				if requestNumber == 1 {
+					w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+					_, _ = io.WriteString(w, "range not satisfiable")
+					return
+				}
+				w.WriteHeader(test.retryStatus)
+				_, _ = io.WriteString(w, "ordinary response")
+			}))
+			t.Cleanup(server.Close)
+
+			serverURL, err := url.Parse(server.URL)
+			if err != nil {
+				t.Fatalf("url.Parse(%q): %v", server.URL, err)
+			}
+			var readBytes atomic.Int64
+			client := &bodyReadCountingClient{client: server.Client(), readBytes: &readBytes}
+
+			result, err := auditCatalogLink(
+				context.Background(),
+				linkAuditCandidate{rawURL: server.URL, host: serverURL.Hostname()},
+				policy,
+				client,
+				"2026-07-27T00:00:00Z",
+			)
+			if err != nil {
+				t.Fatalf("auditCatalogLink() error = %v", err)
+			}
+			if result.State != test.wantState || result.Reason != test.wantReason {
+				t.Fatalf("result = %+v, want state %q reason %q", result, test.wantState, test.wantReason)
+			}
+			if result.HTTPStatus != test.retryStatus {
+				t.Fatalf("HTTPStatus = %d, want retry GET status %d", result.HTTPStatus, test.retryStatus)
+			}
+			if got := getRequests.Load(); got != 2 {
+				t.Fatalf("GET requests = %d, want 2", got)
+			}
+			first := <-getHeaders
+			second := <-getHeaders
+			if got := first.Get("Range"); got != "bytes=0-0" {
+				t.Fatalf("first Range = %q, want bytes=0-0", got)
+			}
+			if got := second.Get("Range"); got != "" {
+				t.Fatalf("second Range = %q, want empty", got)
+			}
+			for index, headers := range []http.Header{first, second} {
+				if got := headers.Get("Accept-Encoding"); got != "identity" {
+					t.Fatalf("GET %d Accept-Encoding = %q, want identity", index+1, got)
+				}
+			}
+			if got := readBytes.Load(); got != 0 {
+				t.Fatalf("response body bytes read = %d, want 0", got)
+			}
+		})
+	}
+}
+
+func TestLinkAuditBodyRuleDeadHEADRetriesRangeNotSatisfiableOnce(t *testing.T) {
+	tests := []struct {
+		name         string
+		deadBody     string
+		requiredBody string
+		retryBody    string
+		wantState    LinkAuditState
+		wantReason   LinkAuditReason
+		wantRead     int64
+	}{
+		{
+			name:         "empty body fails required pattern",
+			requiredBody: "course page",
+			wantState:    LinkAuditStateContentMismatch,
+			wantReason:   LinkAuditReasonRequiredBodyMissing,
+		},
+		{
+			name:       "empty body does not match dead pattern",
+			deadBody:   "gone",
+			wantState:  LinkAuditStateLive,
+			wantReason: LinkAuditReasonOK,
+		},
+		{
+			name:       "ordinary response remains locally capped",
+			deadBody:   "gone",
+			retryBody:  strings.Repeat("x", 128),
+			wantState:  LinkAuditStateLive,
+			wantReason: LinkAuditReasonOK,
+			wantRead:   65,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rule := LinkAuditRule{HostSuffixes: []string{"127.0.0.1"}}
+			if test.deadBody != "" {
+				rule.DeadBodyPatterns = []string{test.deadBody}
+				rule.deadBodyRegexps = mustCompileLinkAuditPatterns(test.deadBody)
+			}
+			if test.requiredBody != "" {
+				rule.RequiredBodyPatterns = []string{test.requiredBody}
+				rule.requiredBodyRegexps = mustCompileLinkAuditPatterns(test.requiredBody)
+			}
+			policy := &LinkAuditPolicy{
+				MaxBodyBytes: 64,
+				Rules:        []LinkAuditRule{rule},
+			}
+			var getRequests atomic.Int32
+			getHeaders := make(chan http.Header, 2)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodHead {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				requestNumber := getRequests.Add(1)
+				select {
+				case getHeaders <- r.Header.Clone():
+				default:
+				}
+				if requestNumber == 1 {
+					w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+					_, _ = io.WriteString(w, "gone")
+					return
+				}
+				w.WriteHeader(http.StatusOK)
+				_, _ = io.WriteString(w, test.retryBody)
+			}))
+			t.Cleanup(server.Close)
+
+			serverURL, err := url.Parse(server.URL)
+			if err != nil {
+				t.Fatalf("url.Parse(%q): %v", server.URL, err)
+			}
+			var readBytes atomic.Int64
+			client := &bodyReadCountingClient{client: server.Client(), readBytes: &readBytes}
+
+			result, err := auditCatalogLink(
+				context.Background(),
+				linkAuditCandidate{rawURL: server.URL, host: serverURL.Hostname()},
+				policy,
+				client,
+				"2026-07-27T00:00:00Z",
+			)
+			if err != nil {
+				t.Fatalf("auditCatalogLink() error = %v", err)
+			}
+			if result.State != test.wantState || result.Reason != test.wantReason {
+				t.Fatalf("result = %+v, want state %q reason %q", result, test.wantState, test.wantReason)
+			}
+			if result.HTTPStatus != http.StatusOK {
+				t.Fatalf("HTTPStatus = %d, want retry GET status 200", result.HTTPStatus)
+			}
+			if got := getRequests.Load(); got != 2 {
+				t.Fatalf("GET requests = %d, want 2", got)
+			}
+			first := <-getHeaders
+			second := <-getHeaders
+			if got := first.Get("Range"); got != "bytes=0-63" {
+				t.Fatalf("first Range = %q, want bytes=0-63", got)
+			}
+			if got := second.Get("Range"); got != "" {
+				t.Fatalf("second Range = %q, want empty", got)
+			}
+			for index, headers := range []http.Header{first, second} {
+				if got := headers.Get("Accept-Encoding"); got != "identity" {
+					t.Fatalf("GET %d Accept-Encoding = %q, want identity", index+1, got)
+				}
+			}
+			if got := readBytes.Load(); got != test.wantRead {
+				t.Fatalf("response body bytes read = %d, want %d", got, test.wantRead)
+			}
+		})
+	}
+}
+
+func TestLinkAuditDeadHEADStatusIsVerifiedByGET(t *testing.T) {
+	tests := []struct {
+		name         string
+		headStatus   int
+		getStatus    int
+		body         string
+		deadStatuses []int
+		noRule       bool
+		deadBody     string
+		mismatchBody string
+		requiredBody string
+		wantState    LinkAuditState
+		wantReason   LinkAuditReason
+		wantRange    string
+		wantBodyRead bool
+	}{
+		{
+			name:         "status-only live GET",
+			getStatus:    http.StatusOK,
+			body:         strings.Repeat("x", 64),
+			deadStatuses: []int{http.StatusNotFound},
+			wantState:    LinkAuditStateLive,
+			wantReason:   LinkAuditReasonOK,
+			wantRange:    "bytes=0-0",
+		},
+		{
+			name:         "status-only dead GET",
+			getStatus:    http.StatusNotFound,
+			body:         strings.Repeat("x", 64),
+			deadStatuses: []int{http.StatusNotFound},
+			wantState:    LinkAuditStateExpired,
+			wantReason:   LinkAuditReasonGlobalDeadStatus,
+			wantRange:    "bytes=0-0",
+		},
+		{
+			name:         "status-only other GET",
+			getStatus:    http.StatusServiceUnavailable,
+			body:         strings.Repeat("x", 64),
+			deadStatuses: []int{http.StatusNotFound},
+			wantState:    LinkAuditStateTransient,
+			wantReason:   LinkAuditReasonServerStatus,
+			wantRange:    "bytes=0-0",
+		},
+		{
+			name:         "required body present",
+			getStatus:    http.StatusOK,
+			body:         "course page",
+			deadStatuses: []int{http.StatusNotFound},
+			requiredBody: "course page",
+			wantState:    LinkAuditStateLive,
+			wantReason:   LinkAuditReasonOK,
+			wantRange:    "bytes=0-63",
+			wantBodyRead: true,
+		},
+		{
+			name:         "required body missing",
+			getStatus:    http.StatusOK,
+			body:         "unrelated",
+			deadStatuses: []int{http.StatusNotFound},
+			requiredBody: "course page",
+			wantState:    LinkAuditStateContentMismatch,
+			wantReason:   LinkAuditReasonRequiredBodyMissing,
+			wantRange:    "bytes=0-63",
+			wantBodyRead: true,
+		},
+		{
+			name:         "body-rule dead GET",
+			getStatus:    http.StatusNotFound,
+			body:         strings.Repeat("x", 64),
+			deadStatuses: []int{http.StatusNotFound},
+			requiredBody: "course page",
+			wantState:    LinkAuditStateExpired,
+			wantReason:   LinkAuditReasonGlobalDeadStatus,
+			wantRange:    "bytes=0-63",
+		},
+		{
+			name:         "body-rule other GET",
+			getStatus:    http.StatusServiceUnavailable,
+			body:         strings.Repeat("x", 64),
+			deadStatuses: []int{http.StatusNotFound},
+			requiredBody: "course page",
+			wantState:    LinkAuditStateTransient,
+			wantReason:   LinkAuditReasonServerStatus,
+			wantRange:    "bytes=0-63",
+		},
+		{
+			name:         "dead body on blocked GET",
+			getStatus:    http.StatusForbidden,
+			body:         "gone" + strings.Repeat("x", 128),
+			deadStatuses: []int{http.StatusNotFound},
+			deadBody:     "gone",
+			wantState:    LinkAuditStateExpired,
+			wantReason:   LinkAuditReasonDeadBody,
+			wantRange:    "bytes=0-63",
+			wantBodyRead: true,
+		},
+		{
+			name:         "dead body on server-error GET",
+			getStatus:    http.StatusServiceUnavailable,
+			body:         "gone" + strings.Repeat("x", 128),
+			deadStatuses: []int{http.StatusNotFound},
+			deadBody:     "gone",
+			wantState:    LinkAuditStateExpired,
+			wantReason:   LinkAuditReasonDeadBody,
+			wantRange:    "bytes=0-63",
+			wantBodyRead: true,
+		},
+		{
+			name:         "mismatch body is not read on blocked GET",
+			getStatus:    http.StatusForbidden,
+			body:         "wrong page",
+			deadStatuses: []int{http.StatusNotFound},
+			mismatchBody: "wrong",
+			wantState:    LinkAuditStateBlocked,
+			wantReason:   LinkAuditReasonBlockedStatus,
+			wantRange:    "bytes=0-63",
+		},
+		{
+			name:         "successful HEAD body-rule dead GET",
+			headStatus:   http.StatusOK,
+			getStatus:    http.StatusNotFound,
+			body:         strings.Repeat("x", 64),
+			deadStatuses: []int{},
+			requiredBody: "course page",
+			wantState:    LinkAuditStateExpired,
+			wantReason:   LinkAuditReasonGlobalDeadStatus,
+			wantRange:    "bytes=0-63",
+		},
+		{
+			name:         "successful HEAD body-rule other GET",
+			headStatus:   http.StatusOK,
+			getStatus:    http.StatusServiceUnavailable,
+			body:         strings.Repeat("x", 64),
+			deadStatuses: []int{},
+			requiredBody: "course page",
+			wantState:    LinkAuditStateTransient,
+			wantReason:   LinkAuditReasonServerStatus,
+			wantRange:    "bytes=0-63",
+		},
+		{
+			name:         "fallback HEAD body-rule dead GET",
+			headStatus:   http.StatusMethodNotAllowed,
+			getStatus:    http.StatusNotFound,
+			body:         strings.Repeat("x", 64),
+			deadStatuses: []int{http.StatusMethodNotAllowed},
+			requiredBody: "course page",
+			wantState:    LinkAuditStateExpired,
+			wantReason:   LinkAuditReasonGlobalDeadStatus,
+			wantRange:    "bytes=0-63",
+		},
+		{
+			name:         "fallback HEAD body-rule other GET",
+			headStatus:   http.StatusMethodNotAllowed,
+			getStatus:    http.StatusServiceUnavailable,
+			body:         strings.Repeat("x", 64),
+			deadStatuses: []int{http.StatusMethodNotAllowed},
+			requiredBody: "course page",
+			wantState:    LinkAuditStateTransient,
+			wantReason:   LinkAuditReasonServerStatus,
+			wantRange:    "bytes=0-63",
+		},
+		{
+			name:         "global 404 with empty rule dead statuses",
+			getStatus:    http.StatusOK,
+			body:         strings.Repeat("x", 64),
+			deadStatuses: []int{},
+			wantState:    LinkAuditStateLive,
+			wantReason:   LinkAuditReasonOK,
+			wantRange:    "bytes=0-0",
+		},
+		{
+			name:       "global 410 without matching rule",
+			headStatus: http.StatusGone,
+			getStatus:  http.StatusOK,
+			body:       strings.Repeat("x", 64),
+			noRule:     true,
+			wantState:  LinkAuditStateLive,
+			wantReason: LinkAuditReasonOK,
+			wantRange:  "bytes=0-0",
+		},
+		{
+			name:         "global 404 body rule with nil dead statuses",
+			getStatus:    http.StatusOK,
+			body:         "course page",
+			requiredBody: "course page",
+			wantState:    LinkAuditStateLive,
+			wantReason:   LinkAuditReasonOK,
+			wantRange:    "bytes=0-63",
+			wantBodyRead: true,
+		},
+		{
+			name:         "global 410 body rule with empty dead statuses",
+			headStatus:   http.StatusGone,
+			getStatus:    http.StatusOK,
+			body:         "unrelated",
+			deadStatuses: []int{},
+			requiredBody: "course page",
+			wantState:    LinkAuditStateContentMismatch,
+			wantReason:   LinkAuditReasonRequiredBodyMissing,
+			wantRange:    "bytes=0-63",
+			wantBodyRead: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rule := LinkAuditRule{
+				HostSuffixes: []string{"127.0.0.1"},
+				DeadStatuses: test.deadStatuses,
+			}
+			if test.requiredBody != "" {
+				rule.RequiredBodyPatterns = []string{test.requiredBody}
+				rule.requiredBodyRegexps = mustCompileLinkAuditPatterns(test.requiredBody)
+			}
+			if test.deadBody != "" {
+				rule.DeadBodyPatterns = []string{test.deadBody}
+				rule.deadBodyRegexps = mustCompileLinkAuditPatterns(test.deadBody)
+			}
+			if test.mismatchBody != "" {
+				rule.MismatchBodyPatterns = []string{test.mismatchBody}
+				rule.mismatchBodyRegexps = mustCompileLinkAuditPatterns(test.mismatchBody)
+			}
+			rules := []LinkAuditRule{rule}
+			if test.noRule {
+				rules = []LinkAuditRule{}
+			}
+			policy := &LinkAuditPolicy{
+				MaxBodyBytes: 64,
+				Rules:        rules,
+			}
+			getHeaders := make(chan http.Header, 1)
+			var getRequests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodHead {
+					headStatus := test.headStatus
+					if headStatus == 0 {
+						headStatus = http.StatusNotFound
+					}
+					w.WriteHeader(headStatus)
+					return
+				}
+				getRequests.Add(1)
+				select {
+				case getHeaders <- r.Header.Clone():
+				default:
+				}
+				w.WriteHeader(test.getStatus)
+				_, _ = io.WriteString(w, test.body)
+			}))
+			t.Cleanup(server.Close)
+
+			serverURL, err := url.Parse(server.URL)
+			if err != nil {
+				t.Fatalf("url.Parse(%q): %v", server.URL, err)
+			}
+			var readBytes atomic.Int64
+			client := &bodyReadCountingClient{client: server.Client(), readBytes: &readBytes}
+
+			result, err := auditCatalogLink(
+				context.Background(),
+				linkAuditCandidate{rawURL: server.URL, host: serverURL.Hostname()},
+				policy,
+				client,
+				"2026-07-27T00:00:00Z",
+			)
+			if err != nil {
+				t.Fatalf("auditCatalogLink() error = %v", err)
+			}
+			if result.State != test.wantState || result.Reason != test.wantReason {
+				t.Fatalf("result = %+v, want state %q reason %q", result, test.wantState, test.wantReason)
+			}
+			if result.HTTPStatus != test.getStatus {
+				t.Fatalf("HTTPStatus = %d, want GET status %d", result.HTTPStatus, test.getStatus)
+			}
+			if got := getRequests.Load(); got != 1 {
+				t.Fatalf("GET requests = %d, want 1", got)
+			}
+
+			var headers http.Header
+			select {
+			case headers = <-getHeaders:
+			case <-time.After(time.Second):
+				t.Fatal("GET request missing")
+			}
+			if got := headers.Get("Range"); got != test.wantRange {
+				t.Fatalf("Range = %q, want %s", got, test.wantRange)
+			}
+			if got := headers.Get("Accept-Encoding"); got != "identity" {
+				t.Fatalf("Accept-Encoding = %q, want identity", got)
+			}
+			gotRead := readBytes.Load()
+			if test.wantBodyRead && (gotRead == 0 || gotRead > policy.MaxBodyBytes+1) {
+				t.Fatalf("response body bytes read = %d, want 1..%d", gotRead, policy.MaxBodyBytes+1)
+			}
+			if !test.wantBodyRead && gotRead != 0 {
+				t.Fatalf("response body bytes read = %d, want 0", gotRead)
 			}
 		})
 	}
