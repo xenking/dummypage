@@ -13,6 +13,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -469,6 +471,12 @@ func buildGzipFromSource(source sourceExport, output io.Writer, options BuildOpt
 		}
 	}
 	unionSharedURLTitleVariants(source.CatalogEntries, clusters, options.LinkTombstones)
+	unionPostNormalizationTitleVariants(
+		source.Source.ChannelID,
+		source.CatalogEntries,
+		clusters,
+		options.TitleRules,
+	)
 
 	canonicalIndexes := make(map[int]int, len(source.CatalogEntries))
 	for index, entry := range source.CatalogEntries {
@@ -558,13 +566,14 @@ func buildGzipFromSource(source sourceExport, output io.Writer, options BuildOpt
 
 		displayEntry, structurallyNormalized := repairLegacyDateRangeHeading(entry)
 		sourceTitle := cleanCourseTitle(displayEntry.Title)
+		sourceTitle, strippedTitleURL := stripExactExtractedTitleURL(sourceTitle, displayEntry.Links)
 		displayTitle := sourceTitle
 		normalized := false
 		if options.TitleRules != nil {
 			displayTitle, normalized = newTitleNormalizer(options.TitleRules).Normalize(sourceTitle)
 		}
 		var titleOriginal *string
-		if structurallyNormalized {
+		if structurallyNormalized || strippedTitleURL {
 			original := cleanCourseTitle(entry.Title)
 			titleOriginal = &original
 		} else if normalized {
@@ -607,7 +616,13 @@ func buildGzipFromSource(source sourceExport, output io.Writer, options BuildOpt
 		}
 
 		if existingIndex, exists := entryIndexes[clusterRoot]; exists {
-			mergeCatalogEntry(&catalog.Entries[existingIndex], candidate)
+			if index == canonicalIndexes[clusterRoot] {
+				existing := catalog.Entries[existingIndex]
+				mergeCatalogEntry(&candidate, existing)
+				catalog.Entries[existingIndex] = candidate
+			} else {
+				mergeCatalogEntry(&catalog.Entries[existingIndex], candidate)
+			}
 			continue
 		}
 		entryIndexes[clusterRoot] = len(catalog.Entries)
@@ -1037,6 +1052,70 @@ func cleanCourseTitle(value string) string {
 	}
 }
 
+func stripExactExtractedTitleURL(title string, links []sourceLink) (string, bool) {
+	extractedURLs := make(map[string]struct{}, len(links))
+	for _, link := range links {
+		key, err := linkKey(link.URL)
+		if err != nil || !strings.HasPrefix(strings.ToLower(key), "http") {
+			continue
+		}
+		extractedURLs[key] = struct{}{}
+	}
+	if len(extractedURLs) == 0 {
+		return title, false
+	}
+
+	changed := false
+	for {
+		removed := false
+		for _, match := range httpURLPattern.FindAllStringIndex(title, -1) {
+			if !hasWhitespaceBoundaries(title, match[0], match[1]) {
+				continue
+			}
+			key, err := linkKey(title[match[0]:match[1]])
+			if err != nil {
+				continue
+			}
+			if _, exists := extractedURLs[key]; !exists {
+				continue
+			}
+
+			left := strings.TrimRightFunc(title[:match[0]], unicode.IsSpace)
+			right := strings.TrimLeftFunc(title[match[1]:], unicode.IsSpace)
+			if left == "" && right == "" {
+				continue
+			}
+			separator := ""
+			if left != "" && right != "" {
+				separator = " "
+			}
+			title = left + separator + right
+			changed = true
+			removed = true
+			break
+		}
+		if !removed {
+			return title, changed
+		}
+	}
+}
+
+func hasWhitespaceBoundaries(value string, start, end int) bool {
+	if start > 0 {
+		previous, _ := utf8.DecodeLastRuneInString(value[:start])
+		if !unicode.IsSpace(previous) {
+			return false
+		}
+	}
+	if end < len(value) {
+		next, _ := utf8.DecodeRuneInString(value[end:])
+		if !unicode.IsSpace(next) {
+			return false
+		}
+	}
+	return true
+}
+
 func repairLegacyDateRangeHeading(entry sourceEntry) (sourceEntry, bool) {
 	parsedTitle := collapseCourseHeadingWhitespace(entry.Title)
 	if !shortDatePattern.MatchString(parsedTitle) || entry.Credit.Author == nil {
@@ -1235,6 +1314,49 @@ func unionSharedURLTitleVariants(entries []sourceEntry, clusters *disjointSet, t
 					clusters.union(owners[leftIndex], owners[rightIndex])
 				}
 			}
+		}
+	}
+}
+
+func unionPostNormalizationTitleVariants(
+	channelID int64,
+	entries []sourceEntry,
+	clusters *disjointSet,
+	rules *TitleRules,
+) {
+	if rules == nil {
+		return
+	}
+
+	normalizer := newTitleNormalizer(rules)
+	ownersByIdentity := make(map[string][]int, len(entries))
+	changedIdentities := make(map[string]bool)
+	for index, entry := range entries {
+		displayEntry, _ := repairLegacyDateRangeHeading(entry)
+		sourceTitle := cleanCourseTitle(displayEntry.Title)
+		sourceTitle, _ = stripExactExtractedTitleURL(sourceTitle, displayEntry.Links)
+		displayTitle, changed := normalizer.Normalize(sourceTitle)
+		author := ""
+		if displayEntry.Credit.Author != nil {
+			author = normalizeSearchText(*displayEntry.Credit.Author)
+		}
+		identityKey := courseIdentityKeyFromParts(
+			channelID,
+			displayTitle,
+			author,
+			entry.Year,
+			entry.YearRange,
+		)
+		ownersByIdentity[identityKey] = append(ownersByIdentity[identityKey], index)
+		changedIdentities[identityKey] = changedIdentities[identityKey] || changed
+	}
+
+	for identityKey, owners := range ownersByIdentity {
+		if !changedIdentities[identityKey] {
+			continue
+		}
+		for _, owner := range owners[1:] {
+			clusters.union(owners[0], owner)
 		}
 	}
 }
