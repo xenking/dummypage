@@ -165,6 +165,9 @@ function validateEntry(entry, index, ids) {
   if (!isObject(entry)) invalidCatalog(prefix + " must be an object");
   requireString(entry.id, prefix + ".id");
   requireString(entry.title, prefix + ".title");
+  if (entry.title_original != null && typeof entry.title_original !== "string") {
+    invalidCatalog(prefix + ".title_original must be a string or null");
+  }
 
   if (ids.has(entry.id)) invalidCatalog("entries contains duplicate IDs");
   ids.add(entry.id);
@@ -296,6 +299,7 @@ function buildSearchText(entry, derived, categoryDefinitions, formatDefinitions)
   const parts = [
     entry.id,
     entry.title,
+    entry.title_original,
     entry.author,
     entry.year,
     entry.year_range && entry.year_range.from,
