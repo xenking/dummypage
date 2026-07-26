@@ -1443,7 +1443,7 @@ progress::-moz-progress-bar {
     .result-title {
         font-size: 0.8125rem;
         font-weight: 520;
-        line-height: 1.25;
+        line-height: 1.35;
     }
 
     .result-arrow {
