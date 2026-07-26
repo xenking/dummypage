@@ -170,6 +170,28 @@ func TestParseArgsAcceptsLinkTombstones(t *testing.T) {
 	}
 }
 
+func TestParseArgsAcceptsLinkSuppressions(t *testing.T) {
+	dir := t.TempDir()
+	inputPath := filepath.Join(dir, "source.json")
+	outputPath := filepath.Join(dir, "catalog.json.gz")
+	suppressionsPath := filepath.Join(dir, "link-suppressions.json")
+
+	config, err := parseArgs([]string{
+		"--input", inputPath,
+		"--output", outputPath,
+		"--link-suppressions", suppressionsPath,
+	})
+	if err != nil {
+		t.Fatalf("parse args: %v", err)
+	}
+	if config.LinkSuppressionsPath != suppressionsPath {
+		t.Fatalf("link suppressions path = %q, want %q", config.LinkSuppressionsPath, suppressionsPath)
+	}
+	if config.InputPaths[0] != inputPath || config.OutputPath != outputPath {
+		t.Fatalf("config lost existing args: %+v", config)
+	}
+}
+
 func TestParseArgsAcceptsLinkEnrichment(t *testing.T) {
 	dir := t.TempDir()
 	inputPath := filepath.Join(dir, "source.json")
@@ -219,6 +241,7 @@ func TestBuildFilesWithLinkEnrichmentEmitsCachedContent(t *testing.T) {
 		"",
 		"",
 		"",
+		"",
 		enrichmentPath,
 	); err != nil {
 		t.Fatalf("build files: %v", err)
@@ -249,6 +272,7 @@ func TestBuildFilesMalformedLinkEnrichmentDoesNotOpenSourcesOrReplaceOutput(t *t
 		"",
 		"",
 		"",
+		"",
 		enrichmentPath,
 	)
 	if err == nil {
@@ -257,6 +281,87 @@ func TestBuildFilesMalformedLinkEnrichmentDoesNotOpenSourcesOrReplaceOutput(t *t
 	if !strings.Contains(err.Error(), "load link enrichment") ||
 		!strings.Contains(err.Error(), enrichmentPath) {
 		t.Fatalf("error = %v, want contextual enrichment path", err)
+	}
+	if got, readErr := os.ReadFile(outputPath); readErr != nil || string(got) != sentinel {
+		t.Fatalf("output changed: %q, error=%v", string(got), readErr)
+	}
+}
+
+func TestBuildFilesWithLinkSuppressionsConsumesPrivateSidecar(t *testing.T) {
+	dir := t.TempDir()
+	inputPath := filepath.Join(dir, "source.json")
+	outputPath := filepath.Join(dir, "catalog.json.gz")
+	suppressionsPath := filepath.Join(dir, "link-suppressions.json")
+	const entryID = "1:1:0"
+	const rawURL = "https://example.test/course/1:1"
+	if err := os.WriteFile(
+		inputPath,
+		[]byte(sourceWithTitleJSON(entryID, "1:1", 1, "Suppressed Course")),
+		0o600,
+	); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	hash := sha256.Sum256([]byte(rawURL))
+	if err := os.WriteFile(suppressionsPath, []byte(fmt.Sprintf(`{
+		"schema_version":"link-suppressions/v1",
+		"canonicalization_version":1,
+		"suppressions":[{
+			"source_entry_id":%q,
+			"sha256":"%x",
+			"reason":"manual",
+			"confirmed_at":"2026-07-27T00:00:00Z"
+		}]
+	}`, entryID, hash)), 0o600); err != nil {
+		t.Fatalf("write suppressions: %v", err)
+	}
+
+	if err := buildFilesWithLinkEnrichment(
+		[]string{inputPath},
+		outputPath,
+		"",
+		"",
+		"",
+		suppressionsPath,
+		"",
+	); err != nil {
+		t.Fatalf("build files: %v", err)
+	}
+	payload := readGzipFile(t, outputPath)
+	if !strings.Contains(payload, `"suppressed_links_removed":1`) ||
+		!strings.Contains(payload, `"entries_without_links_removed":1`) ||
+		!strings.Contains(payload, `"entries":[]`) {
+		t.Fatalf("catalog did not apply link suppression: %s", payload)
+	}
+}
+
+func TestBuildFilesMalformedLinkSuppressionsDoesNotOpenSourcesOrReplaceOutput(t *testing.T) {
+	dir := t.TempDir()
+	missingInputPath := filepath.Join(dir, "missing-source.json")
+	outputPath := filepath.Join(dir, "catalog.json.gz")
+	suppressionsPath := filepath.Join(dir, "link-suppressions.json")
+	const sentinel = "sentinel output"
+	if err := os.WriteFile(outputPath, []byte(sentinel), 0o600); err != nil {
+		t.Fatalf("write sentinel output: %v", err)
+	}
+	if err := os.WriteFile(suppressionsPath, []byte(`{"schema_version":"bad"}`), 0o600); err != nil {
+		t.Fatalf("write malformed suppressions: %v", err)
+	}
+
+	err := buildFilesWithLinkEnrichment(
+		[]string{missingInputPath},
+		outputPath,
+		"",
+		"",
+		"",
+		suppressionsPath,
+		"",
+	)
+	if err == nil {
+		t.Fatal("build files succeeded with malformed link suppressions")
+	}
+	if !strings.Contains(err.Error(), "load link suppressions") ||
+		!strings.Contains(err.Error(), suppressionsPath) {
+		t.Fatalf("error = %v, want contextual suppressions path", err)
 	}
 	if got, readErr := os.ReadFile(outputPath); readErr != nil || string(got) != sentinel {
 		t.Fatalf("output changed: %q, error=%v", string(got), readErr)

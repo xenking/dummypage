@@ -16,7 +16,7 @@ func main() {
 	config, err := parseArgs(os.Args[1:])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		fmt.Fprintln(os.Stderr, "usage: courses-data --input <export.json> [--input <export.json>...] [--input-dir <exports-dir>] --output <catalog.json.gz> [--torrent-dir <dir>] [--title-rules <rules.json>] [--link-tombstones <tombstones.json>] [--link-enrichment <cache.json>]")
+		fmt.Fprintln(os.Stderr, "usage: courses-data --input <export.json> [--input <export.json>...] [--input-dir <exports-dir>] --output <catalog.json.gz> [--torrent-dir <dir>] [--title-rules <rules.json>] [--link-tombstones <tombstones.json>] [--link-suppressions <suppressions.json>] [--link-enrichment <cache.json>]")
 		fmt.Fprintln(os.Stderr, "   or: courses-data <telegram-export.json> <catalog.json.gz> [torrent-dir]")
 		os.Exit(2)
 	}
@@ -26,6 +26,7 @@ func main() {
 		config.TorrentDir,
 		config.TitleRulesPath,
 		config.LinkTombstonesPath,
+		config.LinkSuppressionsPath,
 		config.LinkEnrichmentPath,
 	); err != nil {
 		fmt.Fprintln(os.Stderr, "build courses catalog:", err)
@@ -34,12 +35,13 @@ func main() {
 }
 
 type config struct {
-	InputPaths         []string
-	OutputPath         string
-	TorrentDir         string
-	TitleRulesPath     string
-	LinkTombstonesPath string
-	LinkEnrichmentPath string
+	InputPaths           []string
+	OutputPath           string
+	TorrentDir           string
+	TitleRulesPath       string
+	LinkTombstonesPath   string
+	LinkSuppressionsPath string
+	LinkEnrichmentPath   string
 }
 
 type repeatedStrings []string
@@ -79,6 +81,7 @@ func parseArgs(args []string) (config, error) {
 	flags.StringVar(&result.TorrentDir, "torrent-dir", "", "directory containing downloaded .torrent files")
 	flags.StringVar(&result.TitleRulesPath, "title-rules", "", "title normalization rules JSON path")
 	flags.StringVar(&result.LinkTombstonesPath, "link-tombstones", "", "link tombstones JSON path")
+	flags.StringVar(&result.LinkSuppressionsPath, "link-suppressions", "", "occurrence-specific link suppressions JSON path")
 	flags.StringVar(&result.LinkEnrichmentPath, "link-enrichment", "", "link enrichment cache JSON path")
 	if err := flags.Parse(args); err != nil {
 		return config{}, err
@@ -124,15 +127,22 @@ func buildFile(inputPath, outputPath, torrentDir string) error {
 }
 
 func buildFiles(inputPaths []string, outputPath, torrentDir, titleRulesPath, linkTombstonesPath string) error {
-	return buildFilesWithLinkEnrichment(inputPaths, outputPath, torrentDir, titleRulesPath, linkTombstonesPath, "")
+	return buildFilesWithLinkEnrichment(inputPaths, outputPath, torrentDir, titleRulesPath, linkTombstonesPath, "", "")
 }
 
-func buildFilesWithLinkEnrichment(inputPaths []string, outputPath, torrentDir, titleRulesPath, linkTombstonesPath, linkEnrichmentPath string) error {
+func buildFilesWithLinkEnrichment(
+	inputPaths []string,
+	outputPath, torrentDir, titleRulesPath, linkTombstonesPath, linkSuppressionsPath, linkEnrichmentPath string,
+) error {
 	titleRules, err := loadTitleRulesFile(titleRulesPath)
 	if err != nil {
 		return err
 	}
 	linkTombstones, err := loadLinkTombstonesFile(linkTombstonesPath)
+	if err != nil {
+		return err
+	}
+	linkSuppressions, err := loadLinkSuppressionsFile(linkSuppressionsPath)
 	if err != nil {
 		return err
 	}
@@ -169,10 +179,11 @@ func buildFilesWithLinkEnrichment(inputPaths []string, outputPath, torrentDir, t
 	defer os.Remove(tempPath)
 
 	stats, buildErr := courses.BuildGzipFromSourcesWithOptions(inputs, temp, courses.BuildOptions{
-		TorrentDir:     torrentDir,
-		TitleRules:     titleRules,
-		LinkTombstones: linkTombstones,
-		LinkEnrichment: linkEnrichment,
+		TorrentDir:       torrentDir,
+		TitleRules:       titleRules,
+		LinkTombstones:   linkTombstones,
+		LinkSuppressions: linkSuppressions,
+		LinkEnrichment:   linkEnrichment,
 	})
 	closeErr := temp.Close()
 	if buildErr != nil {
@@ -233,6 +244,23 @@ func loadLinkTombstonesFile(path string) (*courses.LinkTombstones, error) {
 		return nil, fmt.Errorf("load link tombstones %q: %w", path, err)
 	}
 	return tombstones, nil
+}
+
+func loadLinkSuppressionsFile(path string) (*courses.LinkSuppressions, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, nil
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("load link suppressions %q: %w", path, err)
+	}
+	defer file.Close()
+	suppressions, err := courses.LoadLinkSuppressions(file)
+	if err != nil {
+		return nil, fmt.Errorf("load link suppressions %q: %w", path, err)
+	}
+	return suppressions, nil
 }
 
 func loadTitleRulesFile(path string) (*courses.TitleRules, error) {
