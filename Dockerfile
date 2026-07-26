@@ -1,4 +1,4 @@
-FROM golang:1.24 AS build
+FROM golang:1.26.5 AS build
 WORKDIR /app
 
 COPY go.mod go.sum ./
@@ -7,7 +7,7 @@ COPY . .
 
 RUN CGO_ENABLED=0 GO111MODULE=on GOOS=linux GOARCH=amd64 go build -v -ldflags='-w -s' -o /app/build/service /app/cmd
 
-FROM alpine
+FROM alpine:3.24.1
 WORKDIR /app
 COPY static /app/static
 COPY --from=build /app/build/service /app/service

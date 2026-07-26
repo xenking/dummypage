@@ -13,7 +13,6 @@ import (
 	"github.com/gofiber/fiber/v3/middleware/requestid"
 	"github.com/gofiber/fiber/v3/middleware/static"
 	"github.com/gofiber/template/html/v2"
-	"github.com/gofiber/utils/v2"
 	"github.com/phuslu/log"
 
 	"github.com/xenking/dummypage/internal/meta"
@@ -32,15 +31,18 @@ type Config struct {
 	Addr    string `default:"localhost:3000"`
 	Version string `default:"2.0.0"`
 
-	FilesFolder      string `default:"./files"`
-	FilesPrefix      string `default:"files"`
-	LargeFilesFolder string `default:"./large"`
-	LargeFilesPrefix string `default:"large"`
-	ViewsFolder      string `default:"./static/templates"`
-	ViewsExt         string `default:".html"`
-	StaticFolder     string `default:"./static"`
-	StaticPrefix     string `default:"/"`
-	TemplatesPrefix  string `default:"templates"`
+	FilesFolder             string `default:"./files"`
+	FilesPrefix             string `default:"files"`
+	LargeFilesFolder        string `default:"./large"`
+	LargeFilesPrefix        string `default:"large"`
+	CoursesCatalog          string `default:"./data/catalog.json.gz"`
+	CoursesPasswordHash     string
+	CoursesPasswordHashFile string
+	ViewsFolder             string `default:"./static/templates"`
+	ViewsExt                string `default:".html"`
+	StaticFolder            string `default:"./static"`
+	StaticPrefix            string `default:"/"`
+	TemplatesPrefix         string `default:"templates"`
 }
 
 func New(cfg Config, logger *log.Logger) *Server {
@@ -58,7 +60,7 @@ func newServer(cfg Config) *Server {
 			IdleTimeout:       60 * time.Minute,
 			AppName:           "DummyPage",
 			Views:             html.New(cfg.ViewsFolder, cfg.ViewsExt),
-			GETOnly:           true,
+			GETOnly:           false,
 			StreamRequestBody: false,
 			DisableKeepalive:  false,
 		}),
@@ -70,8 +72,13 @@ func newServer(cfg Config) *Server {
 func (s *Server) setupMiddlewares(cfg Config, logger *log.Logger) *Server {
 	s.Use(recover.New())
 	s.Use(requestid.New())
+	s.Use("/courses", coursesSecurityHeaders)
 
-	s.Use(csrf.New())
+	s.Use(csrf.New(csrf.Config{
+		Next: func(c fiber.Ctx) bool {
+			return strings.HasPrefix(c.Path(), "/courses/api/")
+		},
+	}))
 	s.Use(limiter.New(limiter.Config{
 		Max:        10,
 		Expiration: 1 * time.Minute,
@@ -86,14 +93,11 @@ func (s *Server) setupMiddlewares(cfg Config, logger *log.Logger) *Server {
 		LimiterMiddleware:      limiter.FixedWindow{},
 	}))
 	s.Use(cache.New(cache.Config{
-		Expiration:   10 * time.Minute,
-		CacheHeader:  "X-Cache",
-		CacheControl: true,
-		KeyGenerator: func(c fiber.Ctx) string {
-			return utils.CopyString(c.Path())
-		},
+		Expiration:  10 * time.Minute,
+		CacheHeader: "X-Cache",
 		Next: func(c fiber.Ctx) bool {
-			skip := strings.HasPrefix(c.Path(), "/large/")
+			skip := strings.HasPrefix(c.Path(), "/large/") ||
+				strings.HasPrefix(c.Path(), "/courses/api/")
 			return skip
 		},
 		Methods: []string{fiber.MethodGet, fiber.MethodHead},
@@ -122,10 +126,31 @@ func (s *Server) setupMiddlewares(cfg Config, logger *log.Logger) *Server {
 
 func (s *Server) registerRoutes() *Server {
 	s.Get("/", handleIndex())
+	s.Get("/courses", handleCourses())
+	s.Get("/courses/api/meta", limiter.New(limiter.Config{
+		Max:               60,
+		Expiration:        1 * time.Minute,
+		LimiterMiddleware: limiter.FixedWindow{},
+	}), handleCoursesMeta(s.cfg))
+	s.Post("/courses/api/catalog", limiter.New(limiter.Config{
+		Max:                    5,
+		Expiration:             15 * time.Minute,
+		SkipSuccessfulRequests: true,
+		LimiterMiddleware:      limiter.FixedWindow{},
+	}), handleCoursesCatalog(s.cfg))
 	s.Get("/version", handleVersion)
 	s.Use(handleNotFound())
 
 	return s
+}
+
+func handleCourses() fiber.Handler {
+	return func(ctx fiber.Ctx) error {
+		if err := ctx.Status(fiber.StatusOK).Render("courses", fiber.Map{}); err != nil {
+			return ctx.Status(fiber.StatusInternalServerError).SendString("Internal Server Error")
+		}
+		return nil
+	}
 }
 
 func handleIndex() fiber.Handler {
