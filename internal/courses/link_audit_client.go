@@ -342,20 +342,35 @@ func requestLinkAuditObservation(ctx context.Context, candidate linkAuditCandida
 	}()
 
 	status := head.StatusCode
-	needsBody := ruleNeedsLinkAuditBody(policy.matchingRule(candidate.host))
-	if status == http.StatusMethodNotAllowed || status == http.StatusNotImplemented || (status >= 200 && status <= 299 && needsBody) {
+	rule := policy.matchingRule(candidate.host)
+	fallback := status == http.StatusMethodNotAllowed || status == http.StatusNotImplemented
+	verifyDeadStatus := status == http.StatusNotFound ||
+		status == http.StatusGone ||
+		(rule != nil && containsInt(rule.DeadStatuses, status))
+	headOK := status >= 200 && status <= 299
+	requestBody := ruleNeedsLinkAuditBody(rule) && (fallback || verifyDeadStatus || headOK)
+	if fallback || verifyDeadStatus || requestBody {
 		bodyLimit := int64(1)
-		if needsBody {
+		if requestBody {
 			bodyLimit = policy.MaxBodyBytes
 		}
 		get, err := doLinkAuditRequest(ctx, client, http.MethodGet, candidate.rawURL, bodyLimit)
 		if err != nil {
 			return LinkAuditObservation{}, err
 		}
+		if bodyLimit > 0 && get.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+			_ = get.Body.Close()
+			get, err = doLinkAuditRequest(ctx, client, http.MethodGet, candidate.rawURL, 0)
+			if err != nil {
+				return LinkAuditObservation{}, err
+			}
+		}
 		defer func() {
 			_ = get.Body.Close()
 		}()
-		if !needsBody {
+		readBody := ruleNeedsLinkAuditDeadBody(rule) ||
+			(get.StatusCode >= 200 && get.StatusCode <= 299 && ruleNeedsLinkAuditSuccessBody(rule))
+		if !readBody {
 			return LinkAuditObservation{HTTPStatus: get.StatusCode}, nil
 		}
 		body, err := io.ReadAll(io.LimitReader(get.Body, bodyLimit+1))
@@ -392,7 +407,15 @@ func doLinkAuditRequest(ctx context.Context, client LinkAuditHTTPClient, method,
 }
 
 func ruleNeedsLinkAuditBody(rule *LinkAuditRule) bool {
-	return rule != nil && (len(rule.deadBodyRegexps) > 0 || len(rule.mismatchBodyRegexps) > 0 || len(rule.requiredBodyRegexps) > 0)
+	return ruleNeedsLinkAuditDeadBody(rule) || ruleNeedsLinkAuditSuccessBody(rule)
+}
+
+func ruleNeedsLinkAuditDeadBody(rule *LinkAuditRule) bool {
+	return rule != nil && len(rule.deadBodyRegexps) > 0
+}
+
+func ruleNeedsLinkAuditSuccessBody(rule *LinkAuditRule) bool {
+	return rule != nil && (len(rule.mismatchBodyRegexps) > 0 || len(rule.requiredBodyRegexps) > 0)
 }
 
 func classifyLinkAuditTransportError(err error) LinkAuditTransportError {

@@ -65,6 +65,7 @@ func TestRunAuditsWithInjectedClientAndAtomicallyMergesPrivateOutputs(t *testing
 
 	client := &fakeAuditClient{responses: map[string]fakeAuditResponse{
 		"HEAD " + expiredURL:  {status: http.StatusNotFound},
+		"GET " + expiredURL:   {status: http.StatusNotFound},
 		"HEAD " + mismatchURL: {status: http.StatusOK},
 		"GET " + mismatchURL:  {status: http.StatusOK, body: "wrong private body"},
 		"HEAD " + liveURL:     {status: http.StatusOK},
@@ -93,8 +94,8 @@ func TestRunAuditsWithInjectedClientAndAtomicallyMergesPrivateOutputs(t *testing
 	if factoryCalls != 1 {
 		t.Fatalf("client factory calls = %d, want 1", factoryCalls)
 	}
-	if client.callsCount() != 5 {
-		t.Fatalf("HTTP calls = %d, want 5", client.callsCount())
+	if client.callsCount() != 6 {
+		t.Fatalf("HTTP calls = %d, want 6", client.callsCount())
 	}
 
 	reportPayload := readFile(t, reportPath)
