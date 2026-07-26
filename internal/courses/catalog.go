@@ -43,6 +43,13 @@ type SourceInput struct {
 	Name   string
 }
 
+type BuildOptions struct {
+	TorrentDir     string
+	TitleRules     *TitleRules
+	LinkTombstones *LinkTombstones
+	LinkEnrichment *LinkEnrichmentCache
+}
+
 type catalogSource struct {
 	ChannelID    int64  `json:"channel_id"`
 	Title        string `json:"title"`
@@ -111,14 +118,18 @@ type Catalog struct {
 }
 
 type CatalogStats struct {
-	Messages         int `json:"messages"`
-	SourceEntries    int `json:"source_entries"`
-	SourceLinks      int `json:"source_links"`
-	SourcePasswords  int `json:"source_passwords"`
-	Entries          int `json:"entries"`
-	Links            int `json:"links"`
-	Passwords        int `json:"passwords"`
-	NormalizedTitles int `json:"normalized_titles"`
+	Messages                   int `json:"messages"`
+	SourceEntries              int `json:"source_entries"`
+	SourceLinks                int `json:"source_links"`
+	SourcePasswords            int `json:"source_passwords"`
+	StructuralLinksRemoved     int `json:"structural_links_removed"`
+	TombstonedLinksRemoved     int `json:"tombstoned_links_removed"`
+	EntriesWithoutLinksRemoved int `json:"entries_without_links_removed"`
+	Entries                    int `json:"entries"`
+	Links                      int `json:"links"`
+	EnrichedLinks              int `json:"enriched_links"`
+	Passwords                  int `json:"passwords"`
+	NormalizedTitles           int `json:"normalized_titles"`
 }
 
 type CategoryMetadata struct {
@@ -168,13 +179,14 @@ type CatalogSource struct {
 }
 
 type CatalogLink struct {
-	URL      string  `json:"url"`
-	Host     string  `json:"host"`
-	Provider string  `json:"provider"`
-	Kind     string  `json:"kind"`
-	Role     string  `json:"role"`
-	Primary  bool    `json:"primary"`
-	Label    *string `json:"label"`
+	URL      string       `json:"url"`
+	Host     string       `json:"host"`
+	Provider string       `json:"provider"`
+	Kind     string       `json:"kind"`
+	Role     string       `json:"role"`
+	Primary  bool         `json:"primary"`
+	Label    *string      `json:"label"`
+	Content  *LinkContent `json:"content,omitempty"`
 }
 
 type categoryDefinition struct {
@@ -196,6 +208,7 @@ var (
 	nonSearchChars      = regexp.MustCompile(`[^\p{L}\p{N}+#]+`)
 	spacePattern        = regexp.MustCompile(`\s+`)
 	danglingYearPattern = regexp.MustCompile(`\s+\((\d{4})$`)
+	shortDatePattern    = regexp.MustCompile(`^\d{1,2}[./]\d{1,2}(?:[./]\d{2,4})?$`)
 	categoryDefinitions = []categoryDefinition{
 		{
 			ID: "development", Label: "Разработка",
@@ -357,6 +370,10 @@ func BuildGzipWithTorrentDir(input io.Reader, output io.Writer, torrentDir strin
 }
 
 func BuildGzipFromSources(inputs []SourceInput, output io.Writer, torrentDir string) (CatalogStats, error) {
+	return BuildGzipFromSourcesWithOptions(inputs, output, BuildOptions{TorrentDir: torrentDir})
+}
+
+func BuildGzipFromSourcesWithOptions(inputs []SourceInput, output io.Writer, options BuildOptions) (CatalogStats, error) {
 	if len(inputs) == 0 {
 		return CatalogStats{}, errors.New("no source exports provided")
 	}
@@ -379,7 +396,7 @@ func BuildGzipFromSources(inputs []SourceInput, output io.Writer, torrentDir str
 	if err != nil {
 		return CatalogStats{}, err
 	}
-	return buildGzipFromSource(source, output, torrentDir)
+	return buildGzipFromSource(source, output, options)
 }
 
 func decodeSourceExport(input io.Reader) (sourceExport, error) {
@@ -400,7 +417,7 @@ func decodeSourceExport(input io.Reader) (sourceExport, error) {
 	return source, nil
 }
 
-func buildGzipFromSource(source sourceExport, output io.Writer, torrentDir string) (CatalogStats, error) {
+func buildGzipFromSource(source sourceExport, output io.Writer, options BuildOptions) (CatalogStats, error) {
 	messages := make(map[string]sourceMessage, len(source.Messages))
 	for _, message := range source.Messages {
 		if strings.TrimSpace(message.MessageID) == "" {
@@ -411,7 +428,7 @@ func buildGzipFromSource(source sourceExport, output io.Writer, torrentDir strin
 		}
 		messages[message.MessageID] = message
 	}
-	torrentLinks, err := buildTorrentLinks(torrentDir, source.Messages)
+	torrentLinks, err := buildTorrentLinks(options.TorrentDir, source.Messages)
 	if err != nil {
 		return CatalogStats{}, err
 	}
@@ -429,11 +446,18 @@ func buildGzipFromSource(source sourceExport, output io.Writer, torrentDir strin
 
 		titleKey := normalizeSearchText(cleanCourseTitle(entry.Title))
 		for _, link := range entry.Links {
-			linkKey := titleKey + "\x1f" + strings.TrimSpace(link.URL)
-			if owner, exists := titleLinkOwners[linkKey]; exists {
+			if options.LinkTombstones.ContainsURL(link.URL) {
+				continue
+			}
+			canonicalLinkKey, err := linkKey(link.URL)
+			if err != nil {
+				continue
+			}
+			titleLinkKey := titleKey + "\x1f" + canonicalLinkKey
+			if owner, exists := titleLinkOwners[titleLinkKey]; exists {
 				clusters.union(index, owner)
 			} else {
-				titleLinkOwners[linkKey] = index
+				titleLinkOwners[titleLinkKey] = index
 			}
 		}
 	}
@@ -444,7 +468,7 @@ func buildGzipFromSource(source sourceExport, output io.Writer, torrentDir strin
 			}
 		}
 	}
-	unionSharedURLTitleVariants(source.CatalogEntries, clusters)
+	unionSharedURLTitleVariants(source.CatalogEntries, clusters, options.LinkTombstones)
 
 	canonicalIndexes := make(map[int]int, len(source.CatalogEntries))
 	for index, entry := range source.CatalogEntries {
@@ -501,15 +525,27 @@ func buildGzipFromSource(source sourceExport, output io.Writer, torrentDir strin
 
 		links := make([]CatalogLink, 0, len(entry.Links))
 		for _, link := range entry.Links {
-			if err := validateLink(link.URL); err != nil {
-				return CatalogStats{}, fmt.Errorf("entry %q: %w", entry.EntryID, err)
+			if _, _, rejection := inspectLink(link.URL); rejection != "" {
+				catalog.Stats.StructuralLinksRemoved++
+				continue
+			}
+			if options.LinkTombstones.ContainsURL(link.URL) {
+				catalog.Stats.TombstonedLinksRemoved++
+				continue
 			}
 			if actionableSourceLink(entry, link) {
-				links = append(links, catalogLinkFromSource(link))
+				catalogLink := catalogLinkFromSource(link)
+				catalogLink.Content = cachedLinkContent(options.LinkEnrichment, link.URL)
+				links = mergeLinks(links, []CatalogLink{catalogLink})
 			}
 		}
 		if torrentLink, ok := torrentLinks[entry.MessageID]; ok {
-			links = mergeLinks(links, []CatalogLink{torrentLink})
+			if options.LinkTombstones.ContainsURL(torrentLink.URL) {
+				catalog.Stats.TombstonedLinksRemoved++
+			} else {
+				torrentLink.Content = cachedLinkContent(options.LinkEnrichment, torrentLink.URL)
+				links = mergeLinks(links, []CatalogLink{torrentLink})
+			}
 		}
 
 		clusterRoot := clusters.find(index)
@@ -520,13 +556,21 @@ func buildGzipFromSource(source sourceExport, output io.Writer, torrentDir strin
 		}
 		entryKeysByID[courseID] = identityKey
 
-		sourceTitle := cleanCourseTitle(entry.Title)
-		displayTitle, normalized := normalizeCourseTitle(sourceTitle)
+		displayEntry, structurallyNormalized := repairLegacyDateRangeHeading(entry)
+		sourceTitle := cleanCourseTitle(displayEntry.Title)
+		displayTitle := sourceTitle
+		normalized := false
+		if options.TitleRules != nil {
+			displayTitle, normalized = newTitleNormalizer(options.TitleRules).Normalize(sourceTitle)
+		}
 		var titleOriginal *string
-		if normalized {
+		if structurallyNormalized {
+			original := cleanCourseTitle(entry.Title)
+			titleOriginal = &original
+		} else if normalized {
 			titleOriginal = &sourceTitle
 		}
-		classificationEntry := entry
+		classificationEntry := displayEntry
 		classificationEntry.Title = displayTitle
 		categories := classify(classificationEntry)
 		formats, formatSource := classifyFormats(classificationEntry, message)
@@ -535,7 +579,7 @@ func buildGzipFromSource(source sourceExport, output io.Writer, torrentDir strin
 			ID:              courseID,
 			Title:           displayTitle,
 			TitleOriginal:   titleOriginal,
-			Author:          cleanOptionalString(entry.Credit.Author),
+			Author:          cleanOptionalString(displayEntry.Credit.Author),
 			Year:            entry.Year,
 			YearRange:       entry.YearRange,
 			FirstAddedAt:    entry.AddedAt,
@@ -570,6 +614,7 @@ func buildGzipFromSource(source sourceExport, output io.Writer, torrentDir strin
 		catalog.Entries = append(catalog.Entries, candidate)
 	}
 
+	catalog.Stats.EntriesWithoutLinksRemoved = removeEntriesWithoutLinks(&catalog.Entries)
 	propagateAuthorTopics(catalog.Entries)
 	recomputeCatalogStatsAndFacets(&catalog)
 
@@ -592,6 +637,7 @@ func buildGzipFromSource(source sourceExport, output io.Writer, torrentDir strin
 func recomputeCatalogStatsAndFacets(catalog *Catalog) {
 	catalog.Stats.Entries = len(catalog.Entries)
 	catalog.Stats.Links = 0
+	catalog.Stats.EnrichedLinks = 0
 	catalog.Stats.Passwords = 0
 	catalog.Stats.NormalizedTitles = 0
 	catalog.Categories = catalog.Categories[:0]
@@ -600,6 +646,11 @@ func recomputeCatalogStatsAndFacets(catalog *Catalog) {
 	formatCounts := make(map[string]int, len(formatDefinitions))
 	for _, entry := range catalog.Entries {
 		catalog.Stats.Links += len(entry.Links)
+		for _, link := range entry.Links {
+			if link.Content != nil {
+				catalog.Stats.EnrichedLinks++
+			}
+		}
 		catalog.Stats.Passwords += len(entry.Passwords)
 		if entry.TitleOriginal != nil {
 			catalog.Stats.NormalizedTitles++
@@ -626,6 +677,21 @@ func recomputeCatalogStatsAndFacets(catalog *Catalog) {
 			Count: formatCounts[definition.ID],
 		})
 	}
+}
+
+func removeEntriesWithoutLinks(entries *[]CatalogEntry) int {
+	values := *entries
+	kept := values[:0]
+	removed := 0
+	for _, entry := range values {
+		if len(entry.Links) == 0 {
+			removed++
+			continue
+		}
+		kept = append(kept, entry)
+	}
+	*entries = kept
+	return removed
 }
 
 func mergeSourceExports(sources []sourceExport) (sourceExport, error) {
@@ -752,12 +818,13 @@ func mergeSourceEntry(target *sourceEntry, source sourceEntry) {
 func mergeSourceLinks(target, values []sourceLink) []sourceLink {
 	indexes := make(map[string]int, len(target)+len(values))
 	for index, link := range target {
-		indexes[link.URL] = index
+		indexes[sourceLinkMergeKey(link)] = index
 	}
 	for _, link := range values {
-		index, exists := indexes[link.URL]
+		key := sourceLinkMergeKey(link)
+		index, exists := indexes[key]
 		if !exists {
-			indexes[link.URL] = len(target)
+			indexes[key] = len(target)
 			target = append(target, link)
 			continue
 		}
@@ -775,9 +842,16 @@ func mergeSourceLinks(target, values []sourceLink) []sourceLink {
 	return target
 }
 
+func sourceLinkMergeKey(link sourceLink) string {
+	if key, err := linkKey(link.URL); err == nil {
+		return key
+	}
+	return strings.TrimSpace(link.URL)
+}
+
 func catalogLinkFromSource(link sourceLink) CatalogLink {
 	return CatalogLink{
-		URL:      link.URL,
+		URL:      strings.TrimSpace(link.URL),
 		Host:     link.Host,
 		Provider: link.Provider,
 		Kind:     link.Kind,
@@ -785,6 +859,17 @@ func catalogLinkFromSource(link sourceLink) CatalogLink {
 		Primary:  link.Primary,
 		Label:    link.Label,
 	}
+}
+
+func cachedLinkContent(cache *LinkEnrichmentCache, rawURL string) *LinkContent {
+	if cache == nil {
+		return nil
+	}
+	content, ok := cache.ContentForURL(rawURL)
+	if !ok {
+		return nil
+	}
+	return content
 }
 
 func actionableSourceLink(entry sourceEntry, link sourceLink) bool {
@@ -952,6 +1037,64 @@ func cleanCourseTitle(value string) string {
 	}
 }
 
+func repairLegacyDateRangeHeading(entry sourceEntry) (sourceEntry, bool) {
+	parsedTitle := collapseCourseHeadingWhitespace(entry.Title)
+	if !shortDatePattern.MatchString(parsedTitle) || entry.Credit.Author == nil {
+		return entry, false
+	}
+	parsedAuthor := collapseCourseHeadingWhitespace(*entry.Credit.Author)
+	authorParts := strings.Fields(parsedAuthor)
+	if len(authorParts) == 0 ||
+		!shortDatePattern.MatchString(authorParts[len(authorParts)-1]) {
+		return entry, false
+	}
+
+	heading, _, _ := strings.Cut(entry.RawBlock, "\n")
+	heading = collapseCourseHeadingWhitespace(heading)
+	if strings.HasPrefix(heading, "[[") {
+		heading = heading[1:]
+	}
+	provider := ""
+	for strings.HasPrefix(heading, "[") {
+		end := strings.IndexByte(heading, ']')
+		if end < 2 {
+			return entry, false
+		}
+		label := collapseCourseHeadingWhitespace(heading[1:end])
+		if provider == "" {
+			provider = label
+		}
+		heading = collapseCourseHeadingWhitespace(heading[end+1:])
+	}
+	heading = collapseCourseHeadingWhitespace(strings.TrimPrefix(heading, "]"))
+	if provider == "" {
+		return entry, false
+	}
+	if entry.Year != nil {
+		heading = collapseCourseHeadingWhitespace(
+			strings.TrimSuffix(heading, fmt.Sprintf(" (%d)", *entry.Year)),
+		)
+	}
+	left, right, ok := strings.Cut(heading, "―")
+	left = collapseCourseHeadingWhitespace(left)
+	right = collapseCourseHeadingWhitespace(right)
+	if !ok ||
+		left != parsedAuthor ||
+		right != parsedTitle {
+		return entry, false
+	}
+
+	repaired := entry
+	repaired.Title = left + " ― " + right
+	repairedAuthor := provider
+	repaired.Credit.Author = &repairedAuthor
+	return repaired, true
+}
+
+func collapseCourseHeadingWhitespace(value string) string {
+	return strings.Join(strings.Fields(value), " ")
+}
+
 type disjointSet struct {
 	parent []int
 	rank   []uint8
@@ -1069,15 +1212,18 @@ func malformedAuthorTitle(title string) (string, string, bool) {
 	return "", "", false
 }
 
-func unionSharedURLTitleVariants(entries []sourceEntry, clusters *disjointSet) {
+func unionSharedURLTitleVariants(entries []sourceEntry, clusters *disjointSet, tombstones *LinkTombstones) {
 	ownersByURL := make(map[string][]int)
 	for index, entry := range entries {
 		for _, link := range entry.Links {
-			url := strings.TrimSpace(link.URL)
-			if url == "" {
+			if tombstones.ContainsURL(link.URL) {
 				continue
 			}
-			ownersByURL[url] = append(ownersByURL[url], index)
+			key, err := linkKey(link.URL)
+			if err != nil {
+				continue
+			}
+			ownersByURL[key] = append(ownersByURL[key], index)
 		}
 	}
 	for _, owners := range ownersByURL {
@@ -1232,12 +1378,14 @@ func formatIDs() []string {
 func mergeLinks(target, values []CatalogLink) []CatalogLink {
 	indexes := make(map[string]int, len(target)+len(values))
 	for index, link := range target {
-		indexes[link.URL] = index
+		indexes[catalogLinkMergeKey(link)] = index
 	}
 	for _, link := range values {
-		index, exists := indexes[link.URL]
+		key := catalogLinkMergeKey(link)
+		index, exists := indexes[key]
 		if !exists {
-			indexes[link.URL] = len(target)
+			link.Content = cloneLinkContentPointer(link.Content)
+			indexes[key] = len(target)
 			target = append(target, link)
 			continue
 		}
@@ -1247,8 +1395,81 @@ func mergeLinks(target, values []CatalogLink) []CatalogLink {
 		if target[index].Label == nil && link.Label != nil {
 			target[index].Label = link.Label
 		}
+		target[index].Content = preferredLinkContent(target[index].Content, link.Content)
 	}
 	return target
+}
+
+// preferredLinkContent counts populated fields and item metadata, then uses the
+// lexicographically smaller JSON value as a stable tie-break independent of input order.
+func preferredLinkContent(left, right *LinkContent) *LinkContent {
+	if left == nil {
+		return cloneLinkContentPointer(right)
+	}
+	if right == nil {
+		return cloneLinkContentPointer(left)
+	}
+	leftScore := linkContentInformationScore(*left)
+	rightScore := linkContentInformationScore(*right)
+	preferred := left
+	if rightScore > leftScore {
+		preferred = right
+	} else if rightScore == leftScore {
+		leftJSON, _ := json.Marshal(left)
+		rightJSON, _ := json.Marshal(right)
+		if string(rightJSON) < string(leftJSON) {
+			preferred = right
+		}
+	}
+	return cloneLinkContentPointer(preferred)
+}
+
+func linkContentInformationScore(content LinkContent) int {
+	score := len(content.MaterialTypes)
+	if content.Name != "" {
+		score++
+	}
+	if content.Kind != "" {
+		score++
+	}
+	if content.SizeBytes != 0 {
+		score++
+	}
+	if content.FileCount != 0 {
+		score++
+	}
+	if content.FolderCount != 0 {
+		score++
+	}
+	for _, item := range content.Items {
+		score++
+		if item.Name != "" {
+			score++
+		}
+		if item.Kind != "" {
+			score++
+		}
+		if item.SizeBytes != 0 {
+			score++
+		}
+	}
+	return score
+}
+
+func cloneLinkContentPointer(content *LinkContent) *LinkContent {
+	if content == nil {
+		return nil
+	}
+	clone := cloneLinkContent(*content)
+	return &clone
+}
+
+func catalogLinkMergeKey(link CatalogLink) string {
+	key, err := linkKey(link.URL)
+	if err != nil {
+		return strings.TrimSpace(link.URL)
+	}
+	return key
 }
 
 func propagateAuthorTopics(entries []CatalogEntry) {
@@ -1617,26 +1838,6 @@ func matchesCategory(text string, keywords []string) bool {
 		}
 	}
 	return false
-}
-
-func validateLink(rawURL string) error {
-	parsed, err := url.Parse(rawURL)
-	if err != nil {
-		return fmt.Errorf("parse link %q: %w", rawURL, err)
-	}
-	switch parsed.Scheme {
-	case "http", "https":
-		if parsed.Host == "" {
-			return fmt.Errorf("link %q has no host", rawURL)
-		}
-	case "magnet":
-		if parsed.RawQuery == "" {
-			return fmt.Errorf("magnet link %q has no query", rawURL)
-		}
-	default:
-		return fmt.Errorf("link %q uses unsupported scheme %q", rawURL, parsed.Scheme)
-	}
-	return nil
 }
 
 func validateSourceCounts(source sourceExport) error {

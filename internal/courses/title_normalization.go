@@ -57,29 +57,6 @@ var courseTitleReverseTranslit = translit.Map(map[string]string{
 	"'":    "ь",
 })
 
-var protectedCourseTitleTokens = map[string]struct{}{
-	"adobe":      {},
-	"ableton":    {},
-	"autodesk":   {},
-	"live":       {},
-	"javascript": {},
-	"maya":       {},
-	"python":     {},
-	"react.js":   {},
-	"skillbox":   {},
-	"photoshop":  {},
-}
-
-var protectedCourseTitleExactTokens = map[string]struct{}{
-	"Data":      {},
-	"Science":   {},
-	"Instagram": {},
-	"Unity":     {},
-	"Blender":   {},
-	"Django":    {},
-	"Pro":       {},
-}
-
 type courseTitleToken struct {
 	text      string
 	word      bool
@@ -87,8 +64,20 @@ type courseTitleToken struct {
 	protected bool
 }
 
+type titleNormalizer struct {
+	rules *TitleRules
+}
+
+func newTitleNormalizer(rules *TitleRules) titleNormalizer {
+	return titleNormalizer{rules: cloneTitleRules(rules)}
+}
+
 func normalizeCourseTitle(title string) (string, bool) {
-	tokens := tokenizeCourseTitle(title)
+	return newTitleNormalizer(nil).Normalize(title)
+}
+
+func (normalizer titleNormalizer) Normalize(title string) (string, bool) {
+	tokens := normalizer.tokenize(title)
 	forcedTokens := forcedCourseTitleTokens(tokens)
 	score := scoreCourseTitle(tokens, forcedTokens)
 	normalizeWholeTitle := score >= 4
@@ -126,17 +115,18 @@ func normalizeCourseTitle(title string) (string, bool) {
 	return result, result != title
 }
 
-func tokenizeCourseTitle(title string) []courseTitleToken {
+func (normalizer titleNormalizer) tokenize(title string) []courseTitleToken {
 	tokens := make([]courseTitleToken, 0, len(strings.Fields(title))*2)
 	bracketDepth := 0
+	parenDepth := 0
 
 	for len(title) > 0 {
 		r, size := utf8.DecodeRuneInString(title)
-		if isCourseTitleWordRune(r) {
+		if isCourseTitleWordRuneAt(title, 0) {
 			end := size
 			for end < len(title) {
-				next, nextSize := utf8.DecodeRuneInString(title[end:])
-				if !isCourseTitleWordRune(next) {
+				_, nextSize := utf8.DecodeRuneInString(title[end:])
+				if !isCourseTitleWordRuneAt(title, end) {
 					break
 				}
 				end += nextSize
@@ -145,9 +135,9 @@ func tokenizeCourseTitle(title string) []courseTitleToken {
 			token := courseTitleToken{
 				text:      text,
 				word:      true,
-				bracketed: bracketDepth > 0,
+				bracketed: bracketDepth > 0 || parenDepth > 0,
 			}
-			token.protected = protectCourseTitleToken(token)
+			token.protected = normalizer.protectToken(token)
 			tokens = append(tokens, token)
 			title = title[end:]
 			continue
@@ -155,10 +145,14 @@ func tokenizeCourseTitle(title string) []courseTitleToken {
 
 		if r == '[' {
 			bracketDepth++
+		} else if r == '(' {
+			parenDepth++
 		}
-		tokens = append(tokens, courseTitleToken{text: title[:size], bracketed: bracketDepth > 0})
+		tokens = append(tokens, courseTitleToken{text: title[:size], bracketed: bracketDepth > 0 || parenDepth > 0})
 		if r == ']' && bracketDepth > 0 {
 			bracketDepth--
+		} else if r == ')' && parenDepth > 0 {
+			parenDepth--
 		}
 		title = title[size:]
 	}
@@ -217,32 +211,47 @@ func courseTitleTokenIsSpace(token courseTitleToken) bool {
 	return !token.word && unicode.IsSpace(r)
 }
 
-func isCourseTitleWordRune(r rune) bool {
+func isCourseTitleWordRuneAt(value string, offset int) bool {
+	r, _ := utf8.DecodeRuneInString(value[offset:])
+	if r == '\'' {
+		if offset == 0 {
+			return false
+		}
+		prev, _ := utf8.DecodeLastRuneInString(value[:offset])
+		next, _ := utf8.DecodeRuneInString(value[offset+1:])
+		return isASCIILetter(prev) && isASCIILetter(next)
+	}
 	return unicode.IsLetter(r) ||
 		unicode.IsDigit(r) ||
-		r == '\'' ||
 		r == '_' ||
 		r == '@' ||
 		r == ':' ||
 		r == '/'
 }
 
-func protectCourseTitleToken(token courseTitleToken) bool {
+func (normalizer titleNormalizer) protectToken(token courseTitleToken) bool {
 	if token.bracketed {
 		return true
 	}
 
 	lower := strings.ToLower(token.text)
-	if _, protected := protectedCourseTitleExactTokens[token.text]; protected {
-		return true
-	}
-	if _, protected := protectedCourseTitleTokens[lower]; protected {
-		return true
-	}
-	if strings.Contains(lower, "school") {
-		return true
+	if normalizer.rules != nil {
+		if _, protected := normalizer.rules.protectedTokensExact[token.text]; protected {
+			return true
+		}
+		if _, protected := normalizer.rules.protectedTokensCI[lower]; protected {
+			return true
+		}
+		for _, substring := range normalizer.rules.protectedSubstringsCI {
+			if strings.Contains(lower, substring) {
+				return true
+			}
+		}
 	}
 	if strings.ContainsAny(token.text, "0123456789_@/:") {
+		return true
+	}
+	if startsWithASCIICapital(token.text) && containsEnglishCourseTitleMarker(lower) {
 		return true
 	}
 
@@ -275,29 +284,7 @@ func scoreCourseTitle(tokens []courseTitleToken, forcedTokens map[int]bool) int 
 		}
 
 		lower := strings.ToLower(token.text)
-		for _, marker := range []string{
-			"shch", "zh", "kh", "yih", "yiy", "dlya", "nulya",
-		} {
-			if strings.Contains(lower, marker) {
-				score += 3
-			}
-		}
-		if strings.Contains(lower, "sch") {
-			score++
-		} else {
-			for _, marker := range []string{"ch", "sh"} {
-				if strings.Contains(lower, marker) {
-					score++
-				}
-			}
-		}
-		for _, marker := range []string{
-			"ya", "yu", "yo", "ay", "aya", "iya",
-		} {
-			if strings.Contains(lower, marker) {
-				score++
-			}
-		}
+		score += scoreCourseTitleMarkers(lower)
 		if strings.Contains(lower, "'") {
 			score += 2
 		}
@@ -305,11 +292,62 @@ func scoreCourseTitle(tokens []courseTitleToken, forcedTokens map[int]bool) int 
 		case "v", "s", "na", "do", "iz", "po", "za", "c":
 			score++
 		}
-		for _, marker := range []string{"th", "tion", "ing", "ment"} {
-			if strings.Contains(lower, marker) {
-				score -= 3
+		if containsEnglishCourseTitleMarker(lower) {
+			score -= 3
+		}
+	}
+	return score
+}
+
+func containsEnglishCourseTitleMarker(value string) bool {
+	for _, marker := range []string{"th", "tion", "ing", "ment"} {
+		if strings.Contains(value, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func scoreCourseTitleMarkers(value string) int {
+	markers := []struct {
+		text  string
+		score int
+	}{
+		{"onlayn", 4},
+		{"shch", 3},
+		{"dlya", 4},
+		{"nulya", 3},
+		{"yih", 3},
+		{"yiy", 3},
+		{"zh", 3},
+		{"kh", 3},
+		{"sch", 1},
+		{"aya", 1},
+		{"iya", 1},
+		{"ch", 1},
+		{"sh", 1},
+		{"ya", 1},
+		{"yu", 1},
+		{"yo", 1},
+		{"ay", 1},
+	}
+
+	score := 0
+	for index := 0; index < len(value); {
+		bestText := ""
+		bestScore := 0
+		for _, marker := range markers {
+			if strings.HasPrefix(value[index:], marker.text) && len(marker.text) > len(bestText) {
+				bestText = marker.text
+				bestScore = marker.score
 			}
 		}
+		if bestText == "" {
+			index++
+			continue
+		}
+		score += bestScore
+		index += len(bestText)
 	}
 	return score
 }

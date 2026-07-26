@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -114,13 +115,211 @@ func TestBuildFilesMergesMultipleInputsFromFlagStyleConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse args: %v", err)
 	}
-	if err := buildFiles(config.InputPaths, config.OutputPath, config.TorrentDir); err != nil {
+	if err := buildFiles(config.InputPaths, config.OutputPath, config.TorrentDir, config.TitleRulesPath, config.LinkTombstonesPath); err != nil {
 		t.Fatalf("build files: %v", err)
 	}
 
 	payload := readGzipFile(t, outputPath)
 	if !strings.Contains(payload, "Legacy Course") || !strings.Contains(payload, "Current Course") {
 		t.Fatalf("catalog does not preserve both inputs: %s", payload)
+	}
+}
+
+func TestParseArgsAcceptsTitleRules(t *testing.T) {
+	dir := t.TempDir()
+	inputPath := filepath.Join(dir, "source.json")
+	outputPath := filepath.Join(dir, "catalog.json.gz")
+	rulesPath := filepath.Join(dir, "rules.json")
+
+	config, err := parseArgs([]string{
+		"--input", inputPath,
+		"--output", outputPath,
+		"--torrent-dir", filepath.Join(dir, "torrents"),
+		"--title-rules", rulesPath,
+	})
+	if err != nil {
+		t.Fatalf("parse args: %v", err)
+	}
+	if config.TitleRulesPath != rulesPath {
+		t.Fatalf("title rules path = %q, want %q", config.TitleRulesPath, rulesPath)
+	}
+	if config.InputPaths[0] != inputPath || config.OutputPath != outputPath {
+		t.Fatalf("config lost existing args: %+v", config)
+	}
+}
+
+func TestParseArgsAcceptsLinkTombstones(t *testing.T) {
+	dir := t.TempDir()
+	inputPath := filepath.Join(dir, "source.json")
+	outputPath := filepath.Join(dir, "catalog.json.gz")
+	tombstonesPath := filepath.Join(dir, "link-tombstones.json")
+
+	config, err := parseArgs([]string{
+		"--input", inputPath,
+		"--output", outputPath,
+		"--link-tombstones", tombstonesPath,
+	})
+	if err != nil {
+		t.Fatalf("parse args: %v", err)
+	}
+	if config.LinkTombstonesPath != tombstonesPath {
+		t.Fatalf("link tombstones path = %q, want %q", config.LinkTombstonesPath, tombstonesPath)
+	}
+	if config.InputPaths[0] != inputPath || config.OutputPath != outputPath {
+		t.Fatalf("config lost existing args: %+v", config)
+	}
+}
+
+func TestParseArgsAcceptsLinkEnrichment(t *testing.T) {
+	dir := t.TempDir()
+	inputPath := filepath.Join(dir, "source.json")
+	outputPath := filepath.Join(dir, "catalog.json.gz")
+	enrichmentPath := filepath.Join(dir, "link-enrichment.json")
+
+	config, err := parseArgs([]string{
+		"--input", inputPath,
+		"--output", outputPath,
+		"--link-enrichment", enrichmentPath,
+	})
+	if err != nil {
+		t.Fatalf("parse args: %v", err)
+	}
+	if config.LinkEnrichmentPath != enrichmentPath {
+		t.Fatalf("link enrichment path = %q, want %q", config.LinkEnrichmentPath, enrichmentPath)
+	}
+}
+
+func TestBuildFilesWithLinkEnrichmentEmitsCachedContent(t *testing.T) {
+	dir := t.TempDir()
+	inputPath := filepath.Join(dir, "source.json")
+	outputPath := filepath.Join(dir, "catalog.json.gz")
+	enrichmentPath := filepath.Join(dir, "link-enrichment.json")
+	writeSource := sourceWithTitleJSON("1:1:0", "1:1", 1, "Practical Go")
+	if err := os.WriteFile(inputPath, []byte(writeSource), 0o600); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	hash := sha256.Sum256([]byte("https://example.test/course/1:1"))
+	if err := os.WriteFile(enrichmentPath, []byte(fmt.Sprintf(`{
+		"schema_version":"link-enrichment/v1",
+		"extractor_version":1,
+		"generated_at":"2026-07-27T00:00:00Z",
+		"entries":[{
+			"sha256":"%x",
+			"state":"extracted",
+			"checked_at":"2026-07-27T00:00:00Z",
+			"content":{"name":"Course bundle","kind":"folder"}
+		}]
+	}`, hash)), 0o600); err != nil {
+		t.Fatalf("write enrichment: %v", err)
+	}
+
+	if err := buildFilesWithLinkEnrichment(
+		[]string{inputPath},
+		outputPath,
+		"",
+		"",
+		"",
+		enrichmentPath,
+	); err != nil {
+		t.Fatalf("build files: %v", err)
+	}
+	payload := readGzipFile(t, outputPath)
+	if !strings.Contains(payload, `"enriched_links":1`) ||
+		!strings.Contains(payload, `"content":{"name":"Course bundle","kind":"folder"}`) {
+		t.Fatalf("catalog missing enrichment: %s", payload)
+	}
+}
+
+func TestBuildFilesMalformedLinkEnrichmentDoesNotOpenSourcesOrReplaceOutput(t *testing.T) {
+	dir := t.TempDir()
+	missingInputPath := filepath.Join(dir, "missing-source.json")
+	outputPath := filepath.Join(dir, "catalog.json.gz")
+	enrichmentPath := filepath.Join(dir, "link-enrichment.json")
+	const sentinel = "sentinel output"
+	if err := os.WriteFile(outputPath, []byte(sentinel), 0o600); err != nil {
+		t.Fatalf("write sentinel output: %v", err)
+	}
+	if err := os.WriteFile(enrichmentPath, []byte(`{"schema_version":"bad"}`), 0o600); err != nil {
+		t.Fatalf("write malformed enrichment: %v", err)
+	}
+
+	err := buildFilesWithLinkEnrichment(
+		[]string{missingInputPath},
+		outputPath,
+		"",
+		"",
+		"",
+		enrichmentPath,
+	)
+	if err == nil {
+		t.Fatal("build files succeeded with malformed link enrichment")
+	}
+	if !strings.Contains(err.Error(), "load link enrichment") ||
+		!strings.Contains(err.Error(), enrichmentPath) {
+		t.Fatalf("error = %v, want contextual enrichment path", err)
+	}
+	if got, readErr := os.ReadFile(outputPath); readErr != nil || string(got) != sentinel {
+		t.Fatalf("output changed: %q, error=%v", string(got), readErr)
+	}
+}
+
+func TestBuildFilesMalformedLinkTombstonesDoesNotOpenSourcesOrReplaceOutput(t *testing.T) {
+	dir := t.TempDir()
+	missingInputPath := filepath.Join(dir, "missing-source.json")
+	outputPath := filepath.Join(dir, "catalog.json.gz")
+	tombstonesPath := filepath.Join(dir, "link-tombstones.json")
+	const sentinel = "sentinel output"
+
+	if err := os.WriteFile(outputPath, []byte(sentinel), 0o600); err != nil {
+		t.Fatalf("write sentinel output: %v", err)
+	}
+	if err := os.WriteFile(tombstonesPath, []byte(`{"schema_version":"bad"}`), 0o600); err != nil {
+		t.Fatalf("write malformed tombstones: %v", err)
+	}
+
+	err := buildFiles([]string{missingInputPath}, outputPath, "", "", tombstonesPath)
+	if err == nil {
+		t.Fatal("build files succeeded with malformed link tombstones")
+	}
+	if !strings.Contains(err.Error(), "load link tombstones") || !strings.Contains(err.Error(), tombstonesPath) {
+		t.Fatalf("error = %v, want contextual tombstones path", err)
+	}
+	got, readErr := os.ReadFile(outputPath)
+	if readErr != nil {
+		t.Fatalf("read output: %v", readErr)
+	}
+	if string(got) != sentinel {
+		t.Fatalf("output was replaced: %q", string(got))
+	}
+}
+
+func TestBuildFilesMalformedTitleRulesDoesNotOpenSourcesOrReplaceOutput(t *testing.T) {
+	dir := t.TempDir()
+	missingInputPath := filepath.Join(dir, "missing-source.json")
+	outputPath := filepath.Join(dir, "catalog.json.gz")
+	rulesPath := filepath.Join(dir, "rules.json")
+	const sentinel = "sentinel output"
+
+	if err := os.WriteFile(outputPath, []byte(sentinel), 0o600); err != nil {
+		t.Fatalf("write sentinel output: %v", err)
+	}
+	if err := os.WriteFile(rulesPath, []byte(`{"schema_version":"bad"}`), 0o600); err != nil {
+		t.Fatalf("write malformed rules: %v", err)
+	}
+
+	err := buildFiles([]string{missingInputPath}, outputPath, "", rulesPath, "")
+	if err == nil {
+		t.Fatal("build files succeeded with malformed title rules")
+	}
+	if !strings.Contains(err.Error(), "load title rules") || !strings.Contains(err.Error(), rulesPath) {
+		t.Fatalf("error = %v, want contextual title rules path", err)
+	}
+	got, readErr := os.ReadFile(outputPath)
+	if readErr != nil {
+		t.Fatalf("read output: %v", readErr)
+	}
+	if string(got) != sentinel {
+		t.Fatalf("output was replaced: %q", string(got))
 	}
 }
 

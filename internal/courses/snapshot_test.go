@@ -2,6 +2,8 @@ package courses
 
 import (
 	"bytes"
+	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -105,6 +107,89 @@ func TestBuildGzipFromSourcesRepeatedIdenticalSnapshotIsIdempotent(t *testing.T)
 	if len(catalog.Entries[0].Sources) != 1 {
 		t.Fatalf("sources = %+v, want single source record", catalog.Entries[0].Sources)
 	}
+}
+
+func TestBuildGzipFromSourcesWithLinkTombstonesPreventsSnapshotResurrectionAndIsIdempotent(t *testing.T) {
+	oldEntry := validSourceEntry()
+	oldEntry.Title = "Persistent Course"
+	oldEntry.Passwords = []string{"old-password"}
+	oldEntry.Notes = stringPointer("old note")
+	oldEntry.Links = append(oldEntry.Links, sourceLink{
+		URL:      "https://example.test/old-keep",
+		Host:     "example.test",
+		Provider: "example",
+		Kind:     "file_host",
+		Role:     "primary",
+		Primary:  true,
+	})
+
+	newEntry := validSourceEntry()
+	newEntry.EntryID = "1:2:0"
+	newEntry.MessageID = "1:2"
+	newEntry.SourceMessageIDs = []string{"1:2"}
+	newEntry.Title = "Persistent Course"
+	newEntry.Passwords = []string{"new-password"}
+	newEntry.Notes = stringPointer("new note")
+	newEntry.Links = []sourceLink{
+		oldEntry.Links[0],
+		{
+			URL:      "https://example.test/new-keep",
+			Host:     "example.test",
+			Provider: "example",
+			Kind:     "file_host",
+			Role:     "primary",
+			Primary:  true,
+		},
+	}
+	tombstones := &LinkTombstones{hashes: map[string]struct{}{hashForTest(t, oldEntry.Links[0].URL): {}}}
+
+	build := func(t *testing.T) (CatalogStats, Catalog) {
+		t.Helper()
+
+		var output bytes.Buffer
+		newSource := validSource(t, newEntry)
+		newSource.Messages[0].MessageID = "1:2"
+		newSource.Messages[0].TelegramMessageID = 2
+		newSource.Messages[0].URL = "https://messages.example.test/source/2"
+		stats, err := BuildGzipFromSourcesWithOptions([]SourceInput{
+			{Reader: sourceReader(t, validSource(t, oldEntry)), Name: "old.json"},
+			{Reader: sourceReader(t, newSource), Name: "new.json"},
+			{Reader: sourceReader(t, newSource), Name: "new-again.json"},
+		}, &output, BuildOptions{LinkTombstones: tombstones})
+		if err != nil {
+			t.Fatalf("build catalog: %v", err)
+		}
+		return stats, decodeBuiltCatalog(t, &output)
+	}
+
+	firstStats, firstCatalog := build(t)
+	secondStats, secondCatalog := build(t)
+	if firstStats != secondStats {
+		t.Fatalf("repeated stats differ: first=%+v second=%+v", firstStats, secondStats)
+	}
+	entry := firstCatalog.Entries[0]
+	if len(entry.Links) != 2 || entry.Links[0].URL != "https://example.test/old-keep" || entry.Links[1].URL != "https://example.test/new-keep" {
+		t.Fatalf("links = %+v, want tombstone removed and old/new keep links preserved", entry.Links)
+	}
+	if strings.Contains(mustMarshalCatalog(t, firstCatalog), "https://example.test/course") {
+		t.Fatalf("catalog contains tombstoned URL: %+v", firstCatalog.Entries[0].Links)
+	}
+	if len(entry.Passwords) != 2 || len(entry.Notes) != 2 {
+		t.Fatalf("metadata was not preserved: passwords=%v notes=%v", entry.Passwords, entry.Notes)
+	}
+	if mustMarshalCatalog(t, firstCatalog) != mustMarshalCatalog(t, secondCatalog) {
+		t.Fatal("repeated identical snapshots with tombstones changed catalog output")
+	}
+}
+
+func mustMarshalCatalog(t *testing.T, catalog Catalog) string {
+	t.Helper()
+
+	payload, err := json.Marshal(catalog)
+	if err != nil {
+		t.Fatalf("marshal catalog: %v", err)
+	}
+	return string(payload)
 }
 
 func TestBuildGzipFromSourcesRejectsConflictingSourceIdentity(t *testing.T) {
