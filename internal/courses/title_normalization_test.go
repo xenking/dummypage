@@ -298,6 +298,72 @@ func TestTitleNormalizerForceRulesNormalizeWholeTitle(t *testing.T) {
 	}
 }
 
+func TestTitleNormalizerForceTokenOverridesOnlyHeuristicProtection(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    string
+		rules   *TitleRules
+		changed bool
+	}{
+		{
+			name:  "uppercase force token with English suffix",
+			input: "English Klyuching guide",
+			want:  "Енглиш Ключинг гуиде",
+			rules: &TitleRules{
+				forceNormalizeTokensCI: map[string]struct{}{"klyuching": {}},
+			},
+			changed: true,
+		},
+		{
+			name:  "mixed case force token",
+			input: "English KlyuchMarker guide",
+			want:  "Енглиш Ключмаркер гуиде",
+			rules: &TitleRules{
+				forceNormalizeTokensCI: map[string]struct{}{"klyuchmarker": {}},
+			},
+			changed: true,
+		},
+		{
+			name:  "bracketed force token stays protected",
+			input: "English [Klyuching] guide",
+			want:  "English [Klyuching] guide",
+			rules: &TitleRules{
+				forceNormalizeTokensCI: map[string]struct{}{"klyuching": {}},
+			},
+		},
+		{
+			name:  "domain force token stays protected",
+			input: "English Klyuching.example guide",
+			want:  "English Klyuching.example guide",
+			rules: &TitleRules{
+				forceNormalizeTokensCI: map[string]struct{}{"klyuching": {}},
+			},
+		},
+		{
+			name:  "explicitly protected force token stays protected",
+			input: "English Klyuching guide",
+			want:  "English Klyuching guide",
+			rules: &TitleRules{
+				protectedSubstringsCI:  []string{"klyuch"},
+				forceNormalizeTokensCI: map[string]struct{}{"klyuching": {}},
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, changed := newTitleNormalizer(test.rules).Normalize(test.input)
+			if got != test.want {
+				t.Fatalf("Normalize(%q) = %q, want %q", test.input, got, test.want)
+			}
+			if changed != test.changed {
+				t.Fatalf("Normalize(%q) changed = %t, want %t", test.input, changed, test.changed)
+			}
+		})
+	}
+}
+
 func TestTitleNormalizerStructuralCleanup(t *testing.T) {
 	rules := &TitleRules{
 		forceNormalizeTokensCI: map[string]struct{}{},

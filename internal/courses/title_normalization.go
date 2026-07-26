@@ -59,10 +59,11 @@ var courseTitleReverseTranslit = translit.Map(map[string]string{
 })
 
 type courseTitleToken struct {
-	text      string
-	word      bool
-	bracketed bool
-	protected bool
+	text             string
+	word             bool
+	bracketed        bool
+	protected        bool
+	forceOverridable bool
 }
 
 type titleNormalizer struct {
@@ -90,7 +91,10 @@ func (normalizer titleNormalizer) Normalize(title string) (string, bool) {
 	var normalized strings.Builder
 	normalized.Grow(len(title))
 	for _, token := range tokens {
-		if !token.word || token.protected || !isLatinCourseTitleToken(token.text) {
+		forcedToken := normalizer.isForcedToken(token)
+		if !token.word ||
+			(token.protected && !(token.forceOverridable && forcedToken)) ||
+			!isLatinCourseTitleToken(token.text) {
 			normalized.WriteString(token.text)
 			continue
 		}
@@ -187,10 +191,8 @@ func (normalizer titleNormalizer) forceNormalizeWholeTitle(tokens []courseTitleT
 		return false
 	}
 	for _, token := range tokens {
-		if !token.word || token.protected {
-			continue
-		}
-		if _, forced := normalizer.rules.forceNormalizeTokensCI[strings.ToLower(token.text)]; forced {
+		if normalizer.isForcedToken(token) &&
+			(!token.protected || token.forceOverridable) {
 			return true
 		}
 	}
@@ -200,6 +202,14 @@ func (normalizer titleNormalizer) forceNormalizeWholeTitle(tokens []courseTitleT
 		}
 	}
 	return false
+}
+
+func (normalizer titleNormalizer) isForcedToken(token courseTitleToken) bool {
+	if normalizer.rules == nil || !token.word {
+		return false
+	}
+	_, forced := normalizer.rules.forceNormalizeTokensCI[strings.ToLower(token.text)]
+	return forced
 }
 
 func courseTitleContainsPhrase(tokens []courseTitleToken, phrase string) bool {
@@ -250,7 +260,7 @@ func (normalizer titleNormalizer) tokenize(title string) []courseTitleToken {
 				word:      true,
 				bracketed: bracketDepth > 0 || parenDepth > 0,
 			}
-			token.protected = normalizer.protectToken(token)
+			token.protected, token.forceOverridable = normalizer.protectToken(token)
 			tokens = append(tokens, token)
 			title = title[end:]
 			continue
@@ -290,6 +300,7 @@ func protectNetworkCourseTitleFields(tokens []courseTitleToken) {
 			for index := start; index < end; index++ {
 				if tokens[index].word {
 					tokens[index].protected = true
+					tokens[index].forceOverridable = false
 				}
 			}
 		}
@@ -342,30 +353,30 @@ func isCourseTitleWordRuneAt(value string, offset int) bool {
 		r == '/'
 }
 
-func (normalizer titleNormalizer) protectToken(token courseTitleToken) bool {
+func (normalizer titleNormalizer) protectToken(token courseTitleToken) (protected, forceOverridable bool) {
 	if token.bracketed {
-		return true
+		return true, false
 	}
 
 	lower := strings.ToLower(token.text)
 	if normalizer.rules != nil {
 		if _, protected := normalizer.rules.protectedTokensExact[token.text]; protected {
-			return true
+			return true, false
 		}
 		if _, protected := normalizer.rules.protectedTokensCI[lower]; protected {
-			return true
+			return true, false
 		}
 		for _, substring := range normalizer.rules.protectedSubstringsCI {
 			if strings.Contains(lower, substring) {
-				return true
+				return true, false
 			}
 		}
 	}
 	if strings.ContainsAny(token.text, "0123456789_@/:") {
-		return true
+		return true, false
 	}
 	if startsWithASCIICapital(token.text) && containsEnglishCourseTitleMarker(lower) {
-		return true
+		return true, true
 	}
 
 	letters := 0
@@ -379,11 +390,14 @@ func (normalizer titleNormalizer) protectToken(token courseTitleToken) bool {
 		if r >= 'A' && r <= 'Z' {
 			upper++
 			if index > 0 && !(index == 1 && allowUpperSHPrefix) {
-				return true
+				return true, true
 			}
 		}
 	}
-	return letters > 0 && upper == letters
+	if letters > 0 && upper == letters {
+		return true, true
+	}
+	return false, false
 }
 
 func scoreCourseTitle(tokens []courseTitleToken) int {
