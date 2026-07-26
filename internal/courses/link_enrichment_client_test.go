@@ -181,6 +181,70 @@ func TestEnrichCatalogLinksRefreshesFreshCandidates(t *testing.T) {
 	assertEnrichmentName(t, cache, rawURL, "new")
 }
 
+func TestEnrichCatalogLinksDowngradesInvalidExtractedContentAndKeepsCache(t *testing.T) {
+	now := time.Date(2026, 7, 27, 0, 0, 0, 0, time.UTC)
+	policy := mustLinkEnrichmentPolicy(t, 10)
+	urls := struct {
+		valid, locator, angle, control, empty string
+	}{
+		valid:   "https://assets.example.test/valid",
+		locator: "https://assets.example.test/locator",
+		angle:   "https://assets.example.test/angle",
+		control: "https://assets.example.test/control",
+		empty:   "https://assets.example.test/empty",
+	}
+	previous := NewLinkEnrichmentCache(now.Add(-48 * time.Hour))
+	putExtractedURL(t, previous, urls.locator, LinkContent{Name: "locator old"}, now.Add(-48*time.Hour))
+	putExtractedURL(t, previous, urls.angle, LinkContent{Name: "angle old"}, now.Add(-48*time.Hour))
+	putExtractedURL(t, previous, urls.control, LinkContent{Name: "control old"}, now.Add(-48*time.Hour))
+	putExtractedURL(t, previous, urls.empty, LinkContent{Name: "empty old"}, now.Add(-48*time.Hour))
+	previousJSON := marshalEnrichmentCache(t, previous)
+
+	client := &fakeEnrichmentHTTPClient{responses: map[string]fakeEnrichmentResponse{
+		urls.valid:   {status: http.StatusOK, body: enrichmentBody("valid new")},
+		urls.locator: {status: http.StatusOK, body: `<script>{"embeddedPayload":{"name":"https://locator.example.test/value"}}</script>`},
+		urls.angle:   {status: http.StatusOK, body: `<script>{"embeddedPayload":{"name":"<metadata>"}}</script>`},
+		urls.control: {status: http.StatusOK, body: `<script>{"embeddedPayload":{"name":"bad\u0001value"}}</script>`},
+		urls.empty:   {status: http.StatusOK, body: `<script>{"embeddedPayload":{}}</script>`},
+	}}
+
+	cache, stats, err := EnrichCatalogLinks(
+		context.Background(),
+		Catalog{Entries: []CatalogEntry{{Links: []CatalogLink{
+			{URL: urls.valid},
+			{URL: urls.locator},
+			{URL: urls.angle},
+			{URL: urls.control},
+			{URL: urls.empty},
+		}}}},
+		policy,
+		previous,
+		client,
+		now,
+		false,
+		2,
+	)
+	if err != nil {
+		t.Fatalf("EnrichCatalogLinks() error = %v", err)
+	}
+	if stats != (LinkEnrichmentStats{
+		Candidates: 5,
+		Fetched:    5,
+		Extracted:  1,
+		Failed:     4,
+	}) {
+		t.Fatalf("stats = %+v", stats)
+	}
+	if got := marshalEnrichmentCache(t, previous); !bytes.Equal(got, previousJSON) {
+		t.Fatal("previous cache was mutated")
+	}
+	assertEnrichmentName(t, cache, urls.valid, "valid new")
+	assertEnrichmentName(t, cache, urls.locator, "locator old")
+	assertEnrichmentName(t, cache, urls.angle, "angle old")
+	assertEnrichmentName(t, cache, urls.control, "control old")
+	assertEnrichmentName(t, cache, urls.empty, "empty old")
+}
+
 func TestEnrichCatalogLinksAcceptsCanonicalizableHTTPSCase(t *testing.T) {
 	policy := mustLinkEnrichmentPolicy(t, 10)
 	rawURL := "HTTPS://ASSETS.EXAMPLE.TEST/bundle#fragment"

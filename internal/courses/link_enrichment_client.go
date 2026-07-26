@@ -247,6 +247,9 @@ func fetchLinkEnrichmentCandidate(
 	if content == nil {
 		return failed
 	}
+	if err := validateCachedLinkContent(*content); err != nil {
+		return failed
+	}
 	return linkEnrichmentOutcome{
 		hash:    candidate.hash,
 		state:   linkEnrichmentStateExtracted,
