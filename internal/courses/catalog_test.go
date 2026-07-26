@@ -337,6 +337,244 @@ func TestBuildGzipWithTitleRulesNormalizesTransliteratedTitleWithoutChangingIden
 	}
 }
 
+func TestBuildGzipMergesTitlesThatConvergeOnlyAfterNormalization(t *testing.T) {
+	year := 2024
+	first := validSourceEntry()
+	first.Title = "Analiz dannyih na Python"
+	first.Credit.Author = stringPointer("Example Academy")
+	first.Year = &year
+	first.RawBlock = "[Example Academy] Analiz dannyih na Python"
+	first.Links[0].URL = "https://files.example.test/course-first"
+
+	second := first
+	second.EntryID = "1:2:0"
+	second.MessageID = "1:2"
+	second.SourceMessageIDs = []string{"1:2"}
+	second.AddedAt = "2024-02-01T00:00:00Z"
+	second.Title = "Анализ данных на Python"
+	second.RawBlock = "[Example Academy] Анализ данных на Python"
+	second.Links = append([]sourceLink(nil), first.Links...)
+	second.Links[0].URL = "https://files.example.test/course-second"
+
+	source := validSource(t, first)
+	source.Messages = append(source.Messages, sourceMessage{
+		MessageID:         "1:2",
+		TelegramMessageID: 2,
+		URL:               "https://messages.example.test/source/2",
+	})
+	source.CatalogEntries = []sourceEntry{second, first}
+	setSourceCounts(&source)
+	expectedID := courseID(courseIdentityKey(source.Source.ChannelID, first))
+	rules := titleRulesForTest(t, `{
+		"schema_version":"title-normalization-rules/v2",
+		"protected_tokens_ci":[],
+		"protected_tokens_exact":[],
+		"protected_substrings_ci":[],
+		"force_normalize_tokens_ci":[],
+		"force_normalize_phrases_ci":[],
+		"structural_cleanup":{
+			"decode_html_entities":false,
+			"drop_zero_width_format_chars":false,
+			"underscores_as_spaces":false,
+			"strip_leading_provider_noise":false
+		}
+	}`)
+
+	var output bytes.Buffer
+	stats, err := BuildGzipFromSourcesWithOptions(
+		[]SourceInput{{Reader: sourceReader(t, source), Name: "synthetic.json"}},
+		&output,
+		BuildOptions{TitleRules: rules},
+	)
+	if err != nil {
+		t.Fatalf("build catalog: %v", err)
+	}
+	if stats.SourceEntries != 2 || stats.Entries != 1 || stats.SourceLinks != 2 ||
+		stats.Links != 2 || stats.NormalizedTitles != 1 {
+		t.Fatalf("stats = %+v, want one normalized course with two source links", stats)
+	}
+
+	catalog := decodeBuiltCatalog(t, &output)
+	if len(catalog.Entries) != 1 {
+		t.Fatalf("entry count = %d, want 1", len(catalog.Entries))
+	}
+	got := catalog.Entries[0]
+	if got.ID != expectedID {
+		t.Fatalf("course ID = %q, want canonical raw-title identity %q", got.ID, expectedID)
+	}
+	if got.Title != "Анализ данных на Python" {
+		t.Fatalf("title = %q, want normalized display title", got.Title)
+	}
+	if got.TitleOriginal == nil || *got.TitleOriginal != first.Title {
+		t.Fatalf("title_original = %v, want canonical raw title %q", got.TitleOriginal, first.Title)
+	}
+	if len(got.Links) != 2 {
+		t.Fatalf("links = %+v, want both source links", got.Links)
+	}
+	if len(got.Sources) != 2 ||
+		got.Sources[0].EntryID != first.EntryID ||
+		got.Sources[1].EntryID != second.EntryID {
+		t.Fatalf("sources = %+v, want both source messages", got.Sources)
+	}
+}
+
+func TestBuildGzipDoesNotMergeNormalizedTitlesAcrossDifferentYears(t *testing.T) {
+	firstYear := 2023
+	secondYear := 2024
+	first := validSourceEntry()
+	first.Title = "Analiz dannyih na Python"
+	first.Credit.Author = stringPointer("Example Academy")
+	first.Year = &firstYear
+	first.RawBlock = "[Example Academy] Analiz dannyih na Python"
+	first.Links[0].URL = "https://files.example.test/course-first"
+
+	second := first
+	second.EntryID = "1:2:0"
+	second.MessageID = "1:2"
+	second.SourceMessageIDs = []string{"1:2"}
+	second.AddedAt = "2024-02-01T00:00:00Z"
+	second.Title = "Анализ данных на Python"
+	second.Year = &secondYear
+	second.RawBlock = "[Example Academy] Анализ данных на Python"
+	second.Links = append([]sourceLink(nil), first.Links...)
+	second.Links[0].URL = "https://files.example.test/course-second"
+
+	source := validSource(t, first)
+	source.Messages = append(source.Messages, sourceMessage{
+		MessageID:         "1:2",
+		TelegramMessageID: 2,
+		URL:               "https://messages.example.test/source/2",
+	})
+	source.CatalogEntries = []sourceEntry{first, second}
+	setSourceCounts(&source)
+	rules := titleRulesForTest(t, `{
+		"schema_version":"title-normalization-rules/v2",
+		"protected_tokens_ci":[],
+		"protected_tokens_exact":[],
+		"protected_substrings_ci":[],
+		"force_normalize_tokens_ci":[],
+		"force_normalize_phrases_ci":[],
+		"structural_cleanup":{
+			"decode_html_entities":false,
+			"drop_zero_width_format_chars":false,
+			"underscores_as_spaces":false,
+			"strip_leading_provider_noise":false
+		}
+	}`)
+
+	var output bytes.Buffer
+	stats, err := BuildGzipFromSourcesWithOptions(
+		[]SourceInput{{Reader: sourceReader(t, source), Name: "synthetic.json"}},
+		&output,
+		BuildOptions{TitleRules: rules},
+	)
+	if err != nil {
+		t.Fatalf("build catalog: %v", err)
+	}
+	if stats.Entries != 2 || stats.Links != 2 {
+		t.Fatalf("stats = %+v, want distinct courses for different years", stats)
+	}
+
+	catalog := decodeBuiltCatalog(t, &output)
+	gotIDs := make(map[string]struct{}, len(catalog.Entries))
+	for _, entry := range catalog.Entries {
+		gotIDs[entry.ID] = struct{}{}
+	}
+	for _, entry := range []sourceEntry{first, second} {
+		expectedID := courseID(courseIdentityKey(source.Source.ChannelID, entry))
+		if _, exists := gotIDs[expectedID]; !exists {
+			t.Fatalf("course IDs = %v, want raw identity %q", gotIDs, expectedID)
+		}
+	}
+}
+
+func TestBuildGzipStripsExactExtractedURLFromDisplayTitle(t *testing.T) {
+	entry := validSourceEntry()
+	entry.Title = "Practical Go https://files.example.test/course More Exercises"
+	entry.RawBlock = entry.Title
+	entry.Links[0].URL = "https://files.example.test/course"
+	source := validSource(t, entry)
+	expectedID := courseID(courseIdentityKey(source.Source.ChannelID, entry))
+
+	var output bytes.Buffer
+	stats, err := BuildGzip(sourceReader(t, source), &output)
+	if err != nil {
+		t.Fatalf("build catalog: %v", err)
+	}
+	if stats.Entries != 1 || stats.Links != 1 || stats.NormalizedTitles != 1 {
+		t.Fatalf("stats = %+v, want one cleaned course with its extracted link", stats)
+	}
+
+	got := decodeBuiltCatalog(t, &output).Entries[0]
+	if got.ID != expectedID {
+		t.Fatalf("course ID = %q, want existing URL-insensitive identity %q", got.ID, expectedID)
+	}
+	if got.Title != "Practical Go More Exercises" {
+		t.Fatalf("title = %q, want exact extracted URL removed", got.Title)
+	}
+	if got.TitleOriginal == nil || *got.TitleOriginal != entry.Title {
+		t.Fatalf("title_original = %v, want raw title %q", got.TitleOriginal, entry.Title)
+	}
+	if len(got.Links) != 1 || got.Links[0].URL != entry.Links[0].URL {
+		t.Fatalf("links = %+v, want extracted link preserved", got.Links)
+	}
+	if len(got.Sources) != 1 || got.Sources[0].EntryID != entry.EntryID {
+		t.Fatalf("sources = %+v, want provenance preserved", got.Sources)
+	}
+}
+
+func TestBuildGzipDoesNotStripUnmatchedOrBareDomainTitleText(t *testing.T) {
+	tests := []struct {
+		name    string
+		title   string
+		linkURL string
+	}{
+		{
+			name:    "different extracted URL",
+			title:   "Practical Go https://files.example.test/course More Exercises",
+			linkURL: "https://files.example.test/different",
+		},
+		{
+			name:    "bare domain",
+			title:   "Practical Go files.example.test More Exercises",
+			linkURL: "https://files.example.test/different",
+		},
+		{
+			name:    "URL only",
+			title:   "https://files.example.test/course",
+			linkURL: "https://files.example.test/course",
+		},
+		{
+			name:    "URL with punctuation",
+			title:   "Practical Go https://files.example.test/course.",
+			linkURL: "https://files.example.test/course",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			entry := validSourceEntry()
+			entry.Title = test.title
+			entry.RawBlock = entry.Title
+			entry.Links[0].URL = test.linkURL
+			source := validSource(t, entry)
+
+			var output bytes.Buffer
+			if _, err := BuildGzip(sourceReader(t, source), &output); err != nil {
+				t.Fatalf("build catalog: %v", err)
+			}
+
+			got := decodeBuiltCatalog(t, &output).Entries[0]
+			if got.Title != test.title {
+				t.Fatalf("title = %q, want unchanged %q", got.Title, test.title)
+			}
+			if got.TitleOriginal != nil {
+				t.Fatalf("title_original = %v, want nil", got.TitleOriginal)
+			}
+		})
+	}
+}
+
 func TestBuildGzipCountsCleanupOnlyTitleWithoutChangingIdentity(t *testing.T) {
 	entry := validSourceEntry()
 	entry.Title = `"'9.[Provider]_Alpha__Beta`
