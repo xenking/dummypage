@@ -121,6 +121,7 @@ func (normalizer titleNormalizer) cleanup(title string) string {
 	if normalizer.rules == nil {
 		return title
 	}
+	original := title
 	cleanup := normalizer.rules.structuralCleanup
 	if cleanup.decodeHTMLEntities {
 		title = html.UnescapeString(title)
@@ -139,20 +140,63 @@ func (normalizer titleNormalizer) cleanup(title string) string {
 	if cleanup.underscoresAsSpaces {
 		title = cleanupCourseTitleUnderscores(title)
 	}
+	if !hasVisibleCourseTitleContent(title) {
+		return original
+	}
 	return title
 }
 
 func cleanupCourseTitleUnderscores(title string) string {
-	fields := strings.Fields(title)
-	cleaned := make([]string, 0, len(fields))
-	for _, field := range fields {
-		if preserveCourseTitleUnderscores(field, len(fields) > 1) {
-			cleaned = append(cleaned, field)
+	if !strings.Contains(title, "_") {
+		return title
+	}
+
+	embedded := len(strings.Fields(title)) > 1
+	var cleaned strings.Builder
+	cleaned.Grow(len(title))
+	for offset := 0; offset < len(title); {
+		r, size := utf8.DecodeRuneInString(title[offset:])
+		if unicode.IsSpace(r) {
+			cleaned.WriteString(title[offset : offset+size])
+			offset += size
 			continue
 		}
-		cleaned = append(cleaned, strings.Fields(strings.ReplaceAll(field, "_", " "))...)
+
+		end := offset + size
+		for end < len(title) {
+			r, size = utf8.DecodeRuneInString(title[end:])
+			if unicode.IsSpace(r) {
+				break
+			}
+			end += size
+		}
+		field := title[offset:end]
+		if preserveCourseTitleUnderscores(field, embedded) {
+			cleaned.WriteString(field)
+		} else {
+			cleaned.WriteString(replaceCourseTitleFieldUnderscores(field))
+		}
+		offset = end
 	}
-	return strings.Join(cleaned, " ")
+	return cleaned.String()
+}
+
+func replaceCourseTitleFieldUnderscores(field string) string {
+	var cleaned strings.Builder
+	cleaned.Grow(len(field))
+	for offset := 0; offset < len(field); {
+		if field[offset] != '_' {
+			_, size := utf8.DecodeRuneInString(field[offset:])
+			cleaned.WriteString(field[offset : offset+size])
+			offset += size
+			continue
+		}
+		cleaned.WriteByte(' ')
+		for offset < len(field) && field[offset] == '_' {
+			offset++
+		}
+	}
+	return cleaned.String()
 }
 
 func preserveCourseTitleUnderscores(field string, embedded bool) bool {
@@ -191,6 +235,15 @@ func isASCIIUppercaseIdentifierPart(value string) bool {
 		}
 	}
 	return hasLetter
+}
+
+func hasVisibleCourseTitleContent(title string) bool {
+	for _, r := range title {
+		if !unicode.IsSpace(r) && !unicode.Is(unicode.Cf, r) {
+			return true
+		}
+	}
+	return false
 }
 
 func stripLeadingProviderNoise(title string) string {

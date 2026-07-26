@@ -140,6 +140,12 @@ func LoadTitleRules(r io.Reader) (*TitleRules, error) {
 		if !isSingleCourseTitleWord(value) {
 			return nil, fmt.Errorf("decode title rules: force_normalize_tokens_ci value %q must be exactly one title word", value)
 		}
+		if isInherentlyHardProtectedTitleRuleWord(value) {
+			return nil, fmt.Errorf("decode title rules: force_normalize_tokens_ci value %q cannot match a protected title field", value)
+		}
+		if titleRuleWordIsExplicitlyProtected(rules, value) {
+			return nil, fmt.Errorf("decode title rules: force_normalize_tokens_ci value %q is shadowed by a protected title rule", value)
+		}
 	}
 	phrases := make(map[string]struct{}, len(file.ForceNormalizePhrasesCI))
 	for _, value := range file.ForceNormalizePhrasesCI {
@@ -151,6 +157,17 @@ func LoadTitleRules(r io.Reader) (*TitleRules, error) {
 		if len(words) < 2 {
 			return nil, fmt.Errorf("decode title rules: force_normalize_phrases_ci value %q must contain at least two words", value)
 		}
+		for _, word := range words {
+			if !isSingleCourseTitleWord(word) {
+				return nil, fmt.Errorf("decode title rules: force_normalize_phrases_ci value %q contains invalid word %q", value, word)
+			}
+			if isInherentlyHardProtectedTitleRuleWord(word) {
+				return nil, fmt.Errorf("decode title rules: force_normalize_phrases_ci value %q contains protected word %q", value, word)
+			}
+			if titleRuleWordIsExplicitlyProtected(rules, word) {
+				return nil, fmt.Errorf("decode title rules: force_normalize_phrases_ci value %q is shadowed by protected word %q", value, word)
+			}
+		}
 		lower := strings.ToLower(strings.Join(words, " "))
 		if _, exists := phrases[lower]; exists {
 			return nil, fmt.Errorf("decode title rules: duplicate force_normalize_phrases_ci value %q", value)
@@ -158,17 +175,6 @@ func LoadTitleRules(r io.Reader) (*TitleRules, error) {
 		phrases[lower] = struct{}{}
 		rules.forceNormalizePhrasesCI = append(rules.forceNormalizePhrasesCI, lower)
 	}
-	for token := range rules.forceNormalizeTokensCI {
-		if _, exists := rules.protectedTokensCI[token]; exists {
-			return nil, fmt.Errorf("decode title rules: token %q appears in both protected and forced sets", token)
-		}
-		for exact := range rules.protectedTokensExact {
-			if strings.EqualFold(token, exact) {
-				return nil, fmt.Errorf("decode title rules: token %q appears in both protected and forced sets", token)
-			}
-		}
-	}
-
 	return rules, nil
 }
 
@@ -181,6 +187,28 @@ func isSingleCourseTitleWord(value string) bool {
 		offset += size
 	}
 	return value != ""
+}
+
+func isInherentlyHardProtectedTitleRuleWord(value string) bool {
+	return strings.ContainsAny(value, "0123456789_@/:")
+}
+
+func titleRuleWordIsExplicitlyProtected(rules *TitleRules, value string) bool {
+	lower := strings.ToLower(value)
+	if _, protected := rules.protectedTokensCI[lower]; protected {
+		return true
+	}
+	for exact := range rules.protectedTokensExact {
+		if strings.EqualFold(value, exact) {
+			return true
+		}
+	}
+	for _, substring := range rules.protectedSubstringsCI {
+		if strings.Contains(lower, substring) {
+			return true
+		}
+	}
+	return false
 }
 
 func rejectDuplicateTopLevelKeys(data []byte) error {

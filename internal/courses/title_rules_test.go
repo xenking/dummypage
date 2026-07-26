@@ -297,6 +297,9 @@ func TestLoadTitleRulesRejectsInvalidRuleValues(t *testing.T) {
 		{name: "substring duplicate", field: "protected_substrings_ci", value: `["academy","Academy"]`},
 		{name: "multiword force token", field: "force_normalize_tokens_ci", value: `["novyiy stil"]`},
 		{name: "punctuation-split force token", field: "force_normalize_tokens_ci", value: `["alpha-beta"]`},
+		{name: "hard-protected force token", field: "force_normalize_tokens_ci", value: `["alpha_2024"]`},
+		{name: "punctuation-split force phrase component", field: "force_normalize_phrases_ci", value: `["alpha-beta guide"]`},
+		{name: "hard-protected force phrase component", field: "force_normalize_phrases_ci", value: `["alpha 2024"]`},
 	}
 
 	for _, test := range tests {
@@ -321,6 +324,90 @@ func TestLoadTitleRulesRejectsInvalidRuleValues(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestLoadTitleRulesRejectsShadowedForceRules(t *testing.T) {
+	tests := []struct {
+		name               string
+		protectedTokensCI  string
+		protectedExact     string
+		protectedSubstring string
+		forceTokens        string
+		forcePhrases       string
+	}{
+		{
+			name:               "force token shadowed by case insensitive token",
+			protectedTokensCI:  `["klyuchmarker"]`,
+			protectedExact:     `[]`,
+			protectedSubstring: `[]`,
+			forceTokens:        `["klyuchmarker"]`,
+			forcePhrases:       `[]`,
+		},
+		{
+			name:               "force token shadowed by substring",
+			protectedTokensCI:  `[]`,
+			protectedExact:     `[]`,
+			protectedSubstring: `["klyuch"]`,
+			forceTokens:        `["klyuchmarker"]`,
+			forcePhrases:       `[]`,
+		},
+		{
+			name:               "force phrase shadowed by exact token",
+			protectedTokensCI:  `[]`,
+			protectedExact:     `["Beta"]`,
+			protectedSubstring: `[]`,
+			forceTokens:        `[]`,
+			forcePhrases:       `["alpha beta"]`,
+		},
+		{
+			name:               "force phrase shadowed by case insensitive token",
+			protectedTokensCI:  `["alpha"]`,
+			protectedExact:     `[]`,
+			protectedSubstring: `[]`,
+			forceTokens:        `[]`,
+			forcePhrases:       `["alpha beta"]`,
+		},
+		{
+			name:               "force phrase shadowed by substring",
+			protectedTokensCI:  `[]`,
+			protectedExact:     `[]`,
+			protectedSubstring: `["bet"]`,
+			forceTokens:        `[]`,
+			forcePhrases:       `["alpha beta"]`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			payload := titleRulesTestPayload(
+				test.protectedTokensCI,
+				test.protectedExact,
+				test.protectedSubstring,
+				test.forceTokens,
+				test.forcePhrases,
+			)
+			if _, err := LoadTitleRules(strings.NewReader(payload)); err == nil {
+				t.Fatal("LoadTitleRules() error = nil, want shadowed rule error")
+			}
+		})
+	}
+}
+
+func titleRulesTestPayload(protectedCI, protectedExact, protectedSubstrings, forceTokens, forcePhrases string) string {
+	return `{
+		"schema_version": "title-normalization-rules/v2",
+		"protected_tokens_ci": ` + protectedCI + `,
+		"protected_tokens_exact": ` + protectedExact + `,
+		"protected_substrings_ci": ` + protectedSubstrings + `,
+		"force_normalize_tokens_ci": ` + forceTokens + `,
+		"force_normalize_phrases_ci": ` + forcePhrases + `,
+		"structural_cleanup": {
+			"decode_html_entities": false,
+			"drop_zero_width_format_chars": false,
+			"underscores_as_spaces": false,
+			"strip_leading_provider_noise": false
+		}
+	}`
 }
 
 func TestLoadTitleRulesRejectsProtectedTokenOverlap(t *testing.T) {

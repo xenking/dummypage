@@ -383,7 +383,19 @@ func TestTitleNormalizerStructuralCleanup(t *testing.T) {
 		{
 			name:    "entity filename noise and provider prefix",
 			input:   `"'9.[Provider]_Kurs&nbsp;dlya​ novichkov`,
-			want:    "[Provider] Курс для новичков",
+			want:    "[Provider] Курс\u00a0для новичков",
+			changed: true,
+		},
+		{
+			name:    "no underscore preserves exact whitespace",
+			input:   "Advanced  Go\tGuide\u00a0Notes",
+			want:    "Advanced  Go\tGuide\u00a0Notes",
+			changed: false,
+		},
+		{
+			name:    "underscore replacement preserves inter-field whitespace",
+			input:   "Alpha__Beta  Gamma\tDelta\u00a0Notes",
+			want:    "Alpha Beta  Gamma\tDelta\u00a0Notes",
 			changed: true,
 		},
 		{
@@ -432,6 +444,18 @@ func TestTitleNormalizerStructuralCleanup(t *testing.T) {
 			name:    "malformed entity unchanged",
 			input:   "Fish &bogus; Chips",
 			want:    "Fish &bogus; Chips",
+			changed: false,
+		},
+		{
+			name:    "format-only cleanup falls back to original",
+			input:   "\u200b",
+			want:    "\u200b",
+			changed: false,
+		},
+		{
+			name:    "separator-only cleanup falls back to original",
+			input:   "___",
+			want:    "___",
 			changed: false,
 		},
 		{
