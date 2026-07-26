@@ -46,10 +46,11 @@ type SourceInput struct {
 }
 
 type BuildOptions struct {
-	TorrentDir     string
-	TitleRules     *TitleRules
-	LinkTombstones *LinkTombstones
-	LinkEnrichment *LinkEnrichmentCache
+	TorrentDir       string
+	TitleRules       *TitleRules
+	LinkTombstones   *LinkTombstones
+	LinkSuppressions *LinkSuppressions
+	LinkEnrichment   *LinkEnrichmentCache
 }
 
 type catalogSource struct {
@@ -126,6 +127,7 @@ type CatalogStats struct {
 	SourcePasswords            int `json:"source_passwords"`
 	StructuralLinksRemoved     int `json:"structural_links_removed"`
 	TombstonedLinksRemoved     int `json:"tombstoned_links_removed"`
+	SuppressedLinksRemoved     int `json:"suppressed_links_removed"`
 	EntriesWithoutLinksRemoved int `json:"entries_without_links_removed"`
 	Entries                    int `json:"entries"`
 	Links                      int `json:"links"`
@@ -451,6 +453,9 @@ func buildGzipFromSource(source sourceExport, output io.Writer, options BuildOpt
 			if options.LinkTombstones.ContainsURL(link.URL) {
 				continue
 			}
+			if options.LinkSuppressions.ContainsURL(entry.EntryID, link.URL) {
+				continue
+			}
 			canonicalLinkKey, err := linkKey(link.URL)
 			if err != nil {
 				continue
@@ -470,7 +475,7 @@ func buildGzipFromSource(source sourceExport, output io.Writer, options BuildOpt
 			}
 		}
 	}
-	unionSharedURLTitleVariants(source.CatalogEntries, clusters, options.LinkTombstones)
+	unionSharedURLTitleVariants(source.CatalogEntries, clusters, options.LinkTombstones, options.LinkSuppressions)
 	unionPostNormalizationTitleVariants(
 		source.Source.ChannelID,
 		source.CatalogEntries,
@@ -541,6 +546,10 @@ func buildGzipFromSource(source sourceExport, output io.Writer, options BuildOpt
 				catalog.Stats.TombstonedLinksRemoved++
 				continue
 			}
+			if options.LinkSuppressions.ContainsURL(entry.EntryID, link.URL) {
+				catalog.Stats.SuppressedLinksRemoved++
+				continue
+			}
 			if actionableSourceLink(entry, link) {
 				catalogLink := catalogLinkFromSource(link)
 				catalogLink.Content = cachedLinkContent(options.LinkEnrichment, link.URL)
@@ -550,6 +559,8 @@ func buildGzipFromSource(source sourceExport, output io.Writer, options BuildOpt
 		if torrentLink, ok := torrentLinks[entry.MessageID]; ok {
 			if options.LinkTombstones.ContainsURL(torrentLink.URL) {
 				catalog.Stats.TombstonedLinksRemoved++
+			} else if options.LinkSuppressions.ContainsURL(entry.EntryID, torrentLink.URL) {
+				catalog.Stats.SuppressedLinksRemoved++
 			} else {
 				torrentLink.Content = cachedLinkContent(options.LinkEnrichment, torrentLink.URL)
 				links = mergeLinks(links, []CatalogLink{torrentLink})
@@ -1291,11 +1302,19 @@ func malformedAuthorTitle(title string) (string, string, bool) {
 	return "", "", false
 }
 
-func unionSharedURLTitleVariants(entries []sourceEntry, clusters *disjointSet, tombstones *LinkTombstones) {
+func unionSharedURLTitleVariants(
+	entries []sourceEntry,
+	clusters *disjointSet,
+	tombstones *LinkTombstones,
+	suppressions *LinkSuppressions,
+) {
 	ownersByURL := make(map[string][]int)
 	for index, entry := range entries {
 		for _, link := range entry.Links {
 			if tombstones.ContainsURL(link.URL) {
+				continue
+			}
+			if suppressions.ContainsURL(entry.EntryID, link.URL) {
 				continue
 			}
 			key, err := linkKey(link.URL)

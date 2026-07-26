@@ -1616,6 +1616,118 @@ func TestBuildGzipWithLinkTombstonesDoesNotClusterByTombstonedSharedURL(t *testi
 	}
 }
 
+func TestBuildGzipWithLinkSuppressionsRemovesOnlyTheConfiguredSourceOccurrence(t *testing.T) {
+	first := validSourceEntry()
+	first.Title = "Shared Course"
+	first.Credit.Author = stringPointer("First Author")
+	first.Links[0].URL = "HTTPS://Example.Test:443/course#suppressed"
+	second := first
+	second.EntryID = "1:2:0"
+	second.MessageID = "1:2"
+	second.SourceMessageIDs = []string{"1:2"}
+	second.Credit.Author = stringPointer("Second Author")
+	second.Links = append([]sourceLink(nil), first.Links...)
+	second.Links[0].URL = "https://example.test/course#kept"
+
+	source := validSource(t, first)
+	source.Messages = append(source.Messages, sourceMessage{
+		MessageID:         second.MessageID,
+		TelegramMessageID: 2,
+		URL:               "https://example.test/messages/2",
+	})
+	source.CatalogEntries = []sourceEntry{first, second}
+	setSourceCounts(&source)
+	suppressions := linkSuppressionsForTest(t, first.EntryID, first.Links[0].URL)
+
+	var output bytes.Buffer
+	stats, err := BuildGzipFromSourcesWithOptions(
+		[]SourceInput{{Reader: sourceReader(t, source), Name: "source.json"}},
+		&output,
+		BuildOptions{LinkSuppressions: suppressions},
+	)
+	if err != nil {
+		t.Fatalf("build catalog: %v", err)
+	}
+	if stats.SourceLinks != 2 ||
+		stats.SuppressedLinksRemoved != 1 ||
+		stats.EntriesWithoutLinksRemoved != 1 ||
+		stats.Entries != 1 ||
+		stats.Links != 1 {
+		t.Fatalf("stats = %+v, want one suppressed occurrence, one removed entry, and one kept link", stats)
+	}
+	catalog := decodeBuiltCatalog(t, &output)
+	if len(catalog.Entries) != 1 ||
+		len(catalog.Entries[0].Links) != 1 ||
+		catalog.Entries[0].Links[0].URL != second.Links[0].URL ||
+		len(catalog.Entries[0].Sources) != 1 ||
+		catalog.Entries[0].Sources[0].EntryID != second.EntryID {
+		t.Fatalf("entries = %+v, want only the unaffected second occurrence", catalog.Entries)
+	}
+}
+
+func TestBuildGzipWithLinkSuppressionsKeysTorrentOccurrencesBySourceEntry(t *testing.T) {
+	first := validSourceEntry()
+	first.Title = "First Torrent Course"
+	first.Links = nil
+	first.Origin = "document"
+	first.Availability = "document_attachment"
+	second := first
+	second.EntryID = "1:2:0"
+	second.MessageID = "1:2"
+	second.SourceMessageIDs = []string{"1:2"}
+	second.Title = "Second Torrent Course"
+
+	source := validSource(t, first)
+	source.Messages[0].Media.Type = "messageMediaDocument"
+	source.Messages[0].Media.Document.FileName = "First.torrent"
+	source.Messages[0].Media.Document.MIMEType = "application/x-bittorrent"
+	secondMessage := sourceMessage{
+		MessageID:         second.MessageID,
+		TelegramMessageID: 2,
+		URL:               "https://example.test/messages/2",
+	}
+	secondMessage.Media.Type = "messageMediaDocument"
+	secondMessage.Media.Document.FileName = "Second.torrent"
+	secondMessage.Media.Document.MIMEType = "application/x-bittorrent"
+	source.Messages = append(source.Messages, secondMessage)
+	source.CatalogEntries = []sourceEntry{first, second}
+	setSourceCounts(&source)
+
+	torrentDir := t.TempDir()
+	torrentPayload, torrentInfo := validTorrentPayload()
+	for _, name := range []string{"First.torrent", "Second.torrent"} {
+		if err := os.WriteFile(filepath.Join(torrentDir, name), torrentPayload, 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	magnet := "magnet:?xt=urn:btih:" + sha1Hex(torrentInfo)
+	suppressions := linkSuppressionsForTest(t, first.EntryID, magnet)
+
+	var output bytes.Buffer
+	stats, err := BuildGzipFromSourcesWithOptions(
+		[]SourceInput{{Reader: sourceReader(t, source), Name: "source.json"}},
+		&output,
+		BuildOptions{TorrentDir: torrentDir, LinkSuppressions: suppressions},
+	)
+	if err != nil {
+		t.Fatalf("build catalog: %v", err)
+	}
+	if stats.SourceLinks != 0 ||
+		stats.SuppressedLinksRemoved != 1 ||
+		stats.EntriesWithoutLinksRemoved != 1 ||
+		stats.Entries != 1 ||
+		stats.Links != 1 {
+		t.Fatalf("stats = %+v, want one suppressed torrent occurrence and one kept occurrence", stats)
+	}
+	catalog := decodeBuiltCatalog(t, &output)
+	if len(catalog.Entries) != 1 ||
+		len(catalog.Entries[0].Links) != 1 ||
+		catalog.Entries[0].Links[0].URL != magnet ||
+		catalog.Entries[0].Sources[0].EntryID != second.EntryID {
+		t.Fatalf("entries = %+v, want unaffected second torrent occurrence", catalog.Entries)
+	}
+}
+
 func validSource(t *testing.T, entry sourceEntry) sourceExport {
 	t.Helper()
 
