@@ -3,6 +3,7 @@ module github.com/xenking/dummypage
 go 1.26.0
 
 require (
+	github.com/andybalholm/brotli v1.2.2
 	github.com/cristalhq/aconfig v0.19.0
 	github.com/gofiber/fiber/v3 v3.4.0
 	github.com/gofiber/template/html/v2 v2.1.3
@@ -13,7 +14,6 @@ require (
 )
 
 require (
-	github.com/andybalholm/brotli v1.2.2 // indirect
 	github.com/gofiber/schema v1.8.0 // indirect
 	github.com/gofiber/template v1.8.3 // indirect
 	github.com/gofiber/utils v1.2.0 // indirect

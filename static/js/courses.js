@@ -7,6 +7,7 @@
     const MOBILE_BREAKPOINT = 1120;
     const CONTENT_ITEM_PREVIEW_LIMIT = 3;
     const ALLOWED_PROTOCOLS = new Set(["http:", "https:", "magnet:"]);
+    const assetVersion = new URL(document.currentScript.src).searchParams.get("v");
     const MATERIAL_TYPE_LABELS = Object.freeze({
         archive: "архив",
         audio: "аудио",
@@ -1435,7 +1436,11 @@
         }
 
         try {
-            state.rpc = new WorkerRPC("/js/courses-search-worker.js", updateImportProgress);
+            const workerURL = new URL("/js/courses-search-worker.js", window.location.origin);
+            if (assetVersion) {
+                workerURL.searchParams.set("v", assetVersion);
+            }
+            state.rpc = new WorkerRPC(workerURL.toString(), updateImportProgress);
             const result = await state.rpc.call("boot");
             applyWorkerState(result);
             if (state.ready) {

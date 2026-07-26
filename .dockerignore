@@ -6,4 +6,4 @@ build
 files
 data
 private
-**/*.fiber.gz
+**/*.fiber.*
