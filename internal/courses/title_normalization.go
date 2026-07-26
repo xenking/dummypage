@@ -187,7 +187,7 @@ func (normalizer titleNormalizer) forceNormalizeWholeTitle(tokens []courseTitleT
 		return false
 	}
 	for _, token := range tokens {
-		if !token.word {
+		if !token.word || token.protected {
 			continue
 		}
 		if _, forced := normalizer.rules.forceNormalizeTokensCI[strings.ToLower(token.text)]; forced {
@@ -208,7 +208,7 @@ func courseTitleContainsPhrase(tokens []courseTitleToken, phrase string) bool {
 		return false
 	}
 	for start, token := range tokens {
-		if !token.word || !strings.EqualFold(token.text, words[0]) {
+		if !token.word || token.protected || !strings.EqualFold(token.text, words[0]) {
 			continue
 		}
 		index := start
@@ -216,7 +216,7 @@ func courseTitleContainsPhrase(tokens []courseTitleToken, phrase string) bool {
 		for _, word := range words[1:] {
 			var ok bool
 			index, ok = nextWhitespaceSeparatedCourseTitleWord(tokens, index)
-			if !ok || !strings.EqualFold(tokens[index].text, word) {
+			if !ok || tokens[index].protected || !strings.EqualFold(tokens[index].text, word) {
 				matches = false
 				break
 			}

@@ -207,10 +207,11 @@ func TestTitleNormalizerHasNoHardcodedForceRules(t *testing.T) {
 
 func TestTitleNormalizerForceRulesNormalizeWholeTitle(t *testing.T) {
 	tests := []struct {
-		name  string
-		input string
-		want  string
-		rules *TitleRules
+		name    string
+		input   string
+		want    string
+		rules   *TitleRules
+		changed bool
 	}{
 		{
 			name:  "force token",
@@ -219,6 +220,7 @@ func TestTitleNormalizerForceRulesNormalizeWholeTitle(t *testing.T) {
 			rules: &TitleRules{
 				forceNormalizeTokensCI: map[string]struct{}{"klyuchmarker": {}},
 			},
+			changed: true,
 		},
 		{
 			name:  "case insensitive force phrase",
@@ -228,6 +230,7 @@ func TestTitleNormalizerForceRulesNormalizeWholeTitle(t *testing.T) {
 				forceNormalizeTokensCI:  map[string]struct{}{},
 				forceNormalizePhrasesCI: []string{"novyiy stil"},
 			},
+			changed: true,
 		},
 		{
 			name:  "protected technical and network tokens",
@@ -235,6 +238,49 @@ func TestTitleNormalizerForceRulesNormalizeWholeTitle(t *testing.T) {
 			want:  "Неутрал ключмаркер C++ .NET 1C JavaScript React.js https://example.test/put [Provider Name] гуиде",
 			rules: &TitleRules{
 				forceNormalizeTokensCI: map[string]struct{}{"klyuchmarker": {}},
+			},
+			changed: true,
+		},
+		{
+			name:  "bracketed provider force token is ignored",
+			input: "English [klyuchmarker] guide",
+			want:  "English [klyuchmarker] guide",
+			rules: &TitleRules{
+				forceNormalizeTokensCI: map[string]struct{}{"klyuchmarker": {}},
+			},
+		},
+		{
+			name:  "URL force token is ignored",
+			input: "English https://example.test/?klyuchmarker guide",
+			want:  "English https://example.test/?klyuchmarker guide",
+			rules: &TitleRules{
+				forceNormalizeTokensCI: map[string]struct{}{"klyuchmarker": {}},
+			},
+		},
+		{
+			name:  "domain force token is ignored",
+			input: "English klyuchmarker.example guide",
+			want:  "English klyuchmarker.example guide",
+			rules: &TitleRules{
+				forceNormalizeTokensCI: map[string]struct{}{"klyuchmarker": {}},
+			},
+		},
+		{
+			name:  "bracketed provider force phrase is ignored",
+			input: "English [novyiy stil] guide",
+			want:  "English [novyiy stil] guide",
+			rules: &TitleRules{
+				forceNormalizeTokensCI:  map[string]struct{}{},
+				forceNormalizePhrasesCI: []string{"novyiy stil"},
+			},
+		},
+		{
+			name:  "force phrase with protected final token is ignored",
+			input: "English alpha PRO guide",
+			want:  "English alpha PRO guide",
+			rules: &TitleRules{
+				forceNormalizeTokensCI:  map[string]struct{}{},
+				forceNormalizePhrasesCI: []string{"alpha pro"},
 			},
 		},
 	}
@@ -245,8 +291,8 @@ func TestTitleNormalizerForceRulesNormalizeWholeTitle(t *testing.T) {
 			if got != test.want {
 				t.Fatalf("Normalize(%q) = %q, want %q", test.input, got, test.want)
 			}
-			if !changed {
-				t.Fatalf("Normalize(%q) changed = false, want true", test.input)
+			if changed != test.changed {
+				t.Fatalf("Normalize(%q) changed = %t, want %t", test.input, changed, test.changed)
 			}
 		})
 	}
