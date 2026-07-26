@@ -4,4 +4,6 @@ docker-compose.yml
 .env
 build
 files
+data
+private
 **/*.fiber.gz

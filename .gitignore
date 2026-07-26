@@ -2,3 +2,8 @@
 docker-compose.yml
 **/*.fiber.gz
 /build/
+/data/
+/private/
+.env
+.env.*
+!.env.example

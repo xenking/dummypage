@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="color-scheme" content="dark">
+    <meta name="theme-color" content="#151417">
+    <title>Каталог курсов</title>
+    <link rel="icon" type="image/png" sizes="32x32" href="/img/favicon-32x32.png">
+    <link rel="stylesheet" href="/css/courses.css">
+    <script src="/js/courses.js" defer></script>
+</head>
+<body>
+    <a class="skip-link" href="#results-heading">К результатам</a>
+
+    <main class="catalog-shell" id="catalog-app" aria-busy="true">
+        <section class="search-region" aria-label="Поиск и сортировка">
+            <h1 class="sr-only">Каталог курсов</h1>
+            <div class="search-field">
+                <label class="sr-only" for="search-input">Поиск по названию, автору, заметкам и ссылкам</label>
+                <svg class="search-field__icon" aria-hidden="true" viewBox="0 0 24 24">
+                    <circle cx="11" cy="11" r="6.5"></circle>
+                    <path d="m16 16 4 4"></path>
+                </svg>
+                <input
+                    id="search-input"
+                    type="search"
+                    inputmode="search"
+                    enterkeyhint="search"
+                    autocomplete="off"
+                    placeholder="Название, автор, тема, ссылка…"
+                    disabled
+                >
+                <ul class="active-filters" id="active-filters" aria-label="Активные фильтры"></ul>
+                <kbd class="search-shortcut" aria-hidden="true">⌘K</kbd>
+            </div>
+
+            <button class="button mobile-only mobile-filter-button" id="filters-button" type="button" aria-label="Фильтры" aria-controls="filters-dialog" disabled>
+                <svg aria-hidden="true" viewBox="0 0 24 24">
+                    <path d="M4 6h16M7 12h10M10 18h4"></path>
+                </svg>
+                <span class="mobile-filter-label">Фильтры</span>
+                <span class="button-count" id="filter-count" hidden>0</span>
+            </button>
+
+            <div class="sort-controls">
+                <label class="sr-only" for="sort-select">Сортировка</label>
+                <select id="sort-select" disabled>
+                    <option value="relevance">По релевантности</option>
+                    <option value="title">По названию</option>
+                    <option value="author">По автору</option>
+                    <option value="year">По году</option>
+                    <option value="added_at">По дате добавления</option>
+                </select>
+                <button
+                    class="icon-button"
+                    id="sort-direction"
+                    type="button"
+                    aria-label="Направление сортировки: по убыванию"
+                    title="Изменить направление сортировки"
+                    disabled
+                >
+                    <span aria-hidden="true">↓</span>
+                </button>
+            </div>
+
+            <details class="settings-menu" id="settings-menu">
+                <summary
+                    class="icon-button settings-trigger"
+                    id="settings-button"
+                    role="button"
+                    aria-label="Настройки локальной базы"
+                    title="Настройки локальной базы"
+                >
+                    <svg aria-hidden="true" viewBox="0 0 24 24">
+                        <circle cx="12" cy="12" r="3"></circle>
+                        <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.08A1.7 1.7 0 0 0 8.96 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.56-1.03H3v-4h.08A1.7 1.7 0 0 0 4.6 8.96a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 8.96 4.6 1.7 1.7 0 0 0 10 3.08V3h4v.08a1.7 1.7 0 0 0 1.03 1.52 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06a1.7 1.7 0 0 0-.34 1.88A1.7 1.7 0 0 0 20.92 10H21v4h-.08A1.7 1.7 0 0 0 19.4 15Z"></path>
+                    </svg>
+                </summary>
+                <section class="settings-panel" aria-labelledby="settings-heading">
+                    <div class="settings-heading">
+                        <div>
+                            <p class="pane-kicker">На этом устройстве</p>
+                            <h2 id="settings-heading">Локальная база</h2>
+                        </div>
+                        <span class="status-dot" id="connection-dot" aria-hidden="true"></span>
+                    </div>
+                    <p class="settings-status" id="connection-status" role="status">Подготовка локальной базы…</p>
+                    <dl class="settings-meta">
+                        <div>
+                            <dt>Курсов</dt>
+                            <dd id="catalog-count">—</dd>
+                        </div>
+                        <div>
+                            <dt>Версия</dt>
+                            <dd id="version-status">—</dd>
+                        </div>
+                        <div>
+                            <dt>Обновлено</dt>
+                            <dd id="updated-status">—</dd>
+                        </div>
+                        <div>
+                            <dt>Размер</dt>
+                            <dd id="storage-status">Проверка</dd>
+                        </div>
+                    </dl>
+                    <div class="settings-actions">
+                        <button class="button button--quiet" id="update-button" type="button" disabled>
+                            Обновить базу
+                        </button>
+                        <button class="button button--danger-quiet" id="forget-button" type="button" disabled>
+                            Забыть базу на этом устройстве
+                        </button>
+                    </div>
+                </section>
+            </details>
+        </section>
+
+        <div class="workspace">
+            <dialog class="filters-pane" id="filters-dialog" aria-labelledby="filters-heading">
+                <div class="pane-heading">
+                    <div>
+                        <p class="pane-kicker">Отбор</p>
+                        <h2 id="filters-heading">Фильтры</h2>
+                    </div>
+                    <button class="icon-button filters-close mobile-only" id="filters-close" type="button" aria-label="Закрыть фильтры">
+                        <span aria-hidden="true">×</span>
+                    </button>
+                </div>
+
+                <button class="text-button" id="reset-filters" type="button" disabled>Сбросить все</button>
+
+                <div class="facet-groups">
+                    <fieldset class="facet-group" id="format-facet" hidden>
+                        <legend>Тип материала</legend>
+                        <div class="facet-options" id="format-options"></div>
+                    </fieldset>
+
+                    <fieldset class="facet-group">
+                        <legend>Темы</legend>
+                        <div class="facet-options facet-options--scroll" id="category-options">
+                            <p class="facet-placeholder">Темы появятся после загрузки базы.</p>
+                        </div>
+                    </fieldset>
+
+                    <div class="facet-group">
+                        <label for="provider-select">Источник</label>
+                        <select id="provider-select" disabled>
+                            <option value="">Все источники</option>
+                        </select>
+                    </div>
+
+                    <div class="facet-group">
+                        <label for="year-select">Год</label>
+                        <select id="year-select" disabled>
+                            <option value="">Все годы</option>
+                        </select>
+                    </div>
+
+                    <label class="check-row check-row--standalone">
+                        <input id="password-filter" type="checkbox" disabled>
+                        <span>Только с паролем</span>
+                        <span class="facet-count" id="password-count"></span>
+                    </label>
+                </div>
+
+                <div class="filters-footer mobile-only">
+                    <button class="button button--primary" id="apply-filters" type="button">Показать результаты</button>
+                </div>
+            </dialog>
+
+            <section class="results-pane" aria-labelledby="results-heading">
+                <header class="results-heading">
+                    <div>
+                        <p class="pane-kicker">Каталог</p>
+                        <h2 id="results-heading">Результаты</h2>
+                    </div>
+                    <p class="results-count" id="results-count" aria-live="polite">Подготовка…</p>
+                </header>
+
+                <div class="result-columns" aria-hidden="true">
+                    <span>Название</span>
+                    <span>Автор</span>
+                    <span>Год</span>
+                    <span>Источник</span>
+                </div>
+
+                <ol class="results-list" id="results-list" aria-label="Найденные курсы"></ol>
+
+                <section class="empty-state" id="results-state" aria-live="polite">
+                    <div class="state-mark" aria-hidden="true">…</div>
+                    <h3 id="state-title">Открываем локальную базу</h3>
+                    <p id="state-message">Если каталог уже загружен, результаты появятся без сети.</p>
+                    <button class="button" id="state-action" type="button" hidden>Повторить</button>
+                </section>
+
+                <div class="results-sentinel" id="results-sentinel" aria-hidden="true"></div>
+                <div class="batch-progress" id="batch-progress" role="status" hidden>Загружаем ещё результаты…</div>
+            </section>
+
+            <aside class="detail-pane desktop-only" aria-labelledby="detail-heading">
+                <div class="detail-sticky" id="desktop-detail">
+                    <div class="detail-placeholder">
+                        <p class="pane-kicker">Инспектор</p>
+                        <h2 id="detail-heading">Информация о курсе</h2>
+                        <p>Выберите запись — список останется на месте, а ссылки и пароли появятся здесь.</p>
+                    </div>
+                </div>
+            </aside>
+        </div>
+    </main>
+
+    <dialog class="sheet detail-sheet" id="detail-dialog" aria-labelledby="mobile-detail-heading">
+        <div class="sheet-surface">
+            <button
+                class="sheet-handle"
+                id="detail-drag-handle"
+                type="button"
+                aria-label="Закрыть информацию о курсе"
+            ></button>
+            <div id="mobile-detail" tabindex="-1">
+                <h2 id="mobile-detail-heading">Загрузка…</h2>
+            </div>
+        </div>
+    </dialog>
+
+    <dialog class="unlock-dialog" id="unlock-dialog" aria-labelledby="unlock-heading">
+        <form class="unlock-panel" id="unlock-form">
+            <div class="unlock-heading">
+                <p class="pane-kicker">Локальный каталог</p>
+                <h2 id="unlock-heading">Открыть базу курсов</h2>
+                <p id="unlock-copy">Пароль нужен только для загрузки snapshot и не сохраняется интерфейсом.</p>
+            </div>
+
+            <label class="password-field" for="catalog-password">
+                <span>Общий пароль</span>
+                <span class="password-input">
+                    <input
+                        id="catalog-password"
+                        name="password"
+                        type="password"
+                        autocomplete="off"
+                        autocapitalize="none"
+                        spellcheck="false"
+                        maxlength="72"
+                        required
+                    >
+                    <button class="text-button password-toggle" id="password-toggle" type="button" aria-label="Показать пароль">
+                        Показать
+                    </button>
+                </span>
+            </label>
+
+            <p class="form-error" id="unlock-error" role="alert" hidden></p>
+
+            <div class="import-progress" id="import-progress" hidden>
+                <div class="progress-copy">
+                    <span id="progress-label">Загрузка базы…</span>
+                    <span id="progress-value"></span>
+                </div>
+                <progress id="progress-bar" max="100"></progress>
+            </div>
+
+            <div class="unlock-actions">
+                <button class="button button--quiet" id="unlock-cancel" type="button" hidden>Отмена</button>
+                <button class="button button--primary" id="unlock-submit" type="submit">Загрузить базу</button>
+            </div>
+        </form>
+    </dialog>
+
+    <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true" hidden></div>
+</body>
+</html>
