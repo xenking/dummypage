@@ -9,8 +9,10 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"regexp"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -220,6 +222,9 @@ func TestAuditCatalogLinksHTTPExecution(t *testing.T) {
 	if got := bodyReq.Header.Get("Range"); got != "bytes=0-3" {
 		t.Fatalf("Range = %q, want bytes=0-3", got)
 	}
+	if got := bodyReq.Header.Get("Accept-Encoding"); got != "identity" {
+		t.Fatalf("Accept-Encoding = %q, want identity", got)
+	}
 	if got := client.closedBodies.Load(); got < 5 {
 		t.Fatalf("closed bodies = %d, want all responses closed", got)
 	}
@@ -251,6 +256,69 @@ func TestAuditCatalogLinksValidatesInputsAndCancellation(t *testing.T) {
 	_, err := AuditCatalogLinks(ctx, catalog, testLinkAuditPolicy(), nil, &fakeAuditHTTPClient{}, time.Now())
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled error = %v, want context.Canceled", err)
+	}
+}
+
+func TestLinkAuditStatusOnlyFallbackUsesOneByteGET(t *testing.T) {
+	for _, headStatus := range []int{http.StatusMethodNotAllowed, http.StatusNotImplemented} {
+		t.Run(http.StatusText(headStatus), func(t *testing.T) {
+			policy := &LinkAuditPolicy{
+				MaxBodyBytes: 64,
+				Rules: []LinkAuditRule{{
+					HostSuffixes: []string{"127.0.0.1"},
+					DeadStatuses: []int{http.StatusNotFound},
+				}},
+			}
+			getHeaders := make(chan http.Header, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodHead {
+					w.WriteHeader(headStatus)
+					return
+				}
+				getHeaders <- r.Header.Clone()
+				_, _ = io.WriteString(w, strings.Repeat("x", int(policy.MaxBodyBytes)))
+			}))
+			t.Cleanup(server.Close)
+
+			serverURL, err := url.Parse(server.URL)
+			if err != nil {
+				t.Fatalf("url.Parse(%q): %v", server.URL, err)
+			}
+			var readBytes atomic.Int64
+			client := &bodyReadCountingClient{client: server.Client(), readBytes: &readBytes}
+
+			observation, err := requestLinkAuditObservation(
+				context.Background(),
+				linkAuditCandidate{rawURL: server.URL, host: serverURL.Hostname()},
+				policy,
+				client,
+			)
+			if err != nil {
+				t.Fatalf("requestLinkAuditObservation() error = %v", err)
+			}
+			if observation.HTTPStatus != http.StatusOK {
+				t.Fatalf("HTTPStatus = %d, want 200", observation.HTTPStatus)
+			}
+			if len(observation.Body) != 0 {
+				t.Fatalf("Body length = %d, want 0 for status-only audit", len(observation.Body))
+			}
+
+			var headers http.Header
+			select {
+			case headers = <-getHeaders:
+			case <-time.After(time.Second):
+				t.Fatal("GET request missing")
+			}
+			if got := headers.Get("Range"); got != "bytes=0-0" {
+				t.Fatalf("Range = %q, want bytes=0-0", got)
+			}
+			if got := headers.Get("Accept-Encoding"); got != "identity" {
+				t.Fatalf("Accept-Encoding = %q, want identity", got)
+			}
+			if got := readBytes.Load(); got > 1 {
+				t.Fatalf("response body bytes read = %d, want <= 1", got)
+			}
+		})
 	}
 }
 
@@ -361,6 +429,30 @@ type fakeAuditHTTPClient struct {
 type fakeHTTPResponse struct {
 	status int
 	body   string
+}
+
+type bodyReadCountingClient struct {
+	client    *http.Client
+	readBytes *atomic.Int64
+}
+
+func (c *bodyReadCountingClient) Do(req *http.Request) (*http.Response, error) {
+	resp, err := c.client.Do(req)
+	if resp != nil && resp.Body != nil {
+		resp.Body = &readCountingBody{ReadCloser: resp.Body, readBytes: c.readBytes}
+	}
+	return resp, err
+}
+
+type readCountingBody struct {
+	io.ReadCloser
+	readBytes *atomic.Int64
+}
+
+func (b *readCountingBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	b.readBytes.Add(int64(n))
+	return n, err
 }
 
 func (f *fakeAuditHTTPClient) Do(req *http.Request) (*http.Response, error) {

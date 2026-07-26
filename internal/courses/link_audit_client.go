@@ -342,21 +342,30 @@ func requestLinkAuditObservation(ctx context.Context, candidate linkAuditCandida
 	}()
 
 	status := head.StatusCode
-	if status == http.StatusMethodNotAllowed || status == http.StatusNotImplemented || (status >= 200 && status <= 299 && ruleNeedsLinkAuditBody(policy.matchingRule(candidate.host))) {
-		if status == http.StatusMethodNotAllowed || status == http.StatusNotImplemented || status >= 200 && status <= 299 {
-			get, err := doLinkAuditRequest(ctx, client, http.MethodGet, candidate.rawURL, policy.MaxBodyBytes)
-			if err != nil {
-				return LinkAuditObservation{}, err
-			}
-			defer func() {
-				_ = get.Body.Close()
-			}()
-			body, err := io.ReadAll(io.LimitReader(get.Body, policy.MaxBodyBytes))
-			if err != nil {
-				return LinkAuditObservation{}, err
-			}
-			return LinkAuditObservation{HTTPStatus: get.StatusCode, Body: body}, nil
+	needsBody := ruleNeedsLinkAuditBody(policy.matchingRule(candidate.host))
+	if status == http.StatusMethodNotAllowed || status == http.StatusNotImplemented || (status >= 200 && status <= 299 && needsBody) {
+		bodyLimit := int64(1)
+		if needsBody {
+			bodyLimit = policy.MaxBodyBytes
 		}
+		get, err := doLinkAuditRequest(ctx, client, http.MethodGet, candidate.rawURL, bodyLimit)
+		if err != nil {
+			return LinkAuditObservation{}, err
+		}
+		defer func() {
+			_ = get.Body.Close()
+		}()
+		if !needsBody {
+			return LinkAuditObservation{HTTPStatus: get.StatusCode}, nil
+		}
+		body, err := io.ReadAll(io.LimitReader(get.Body, bodyLimit+1))
+		if err != nil {
+			return LinkAuditObservation{}, err
+		}
+		if int64(len(body)) > bodyLimit {
+			body = body[:bodyLimit]
+		}
+		return LinkAuditObservation{HTTPStatus: get.StatusCode, Body: body}, nil
 	}
 	return LinkAuditObservation{HTTPStatus: status}, nil
 }
@@ -366,8 +375,11 @@ func doLinkAuditRequest(ctx context.Context, client LinkAuditHTTPClient, method,
 	if err != nil {
 		return nil, err
 	}
-	if method == http.MethodGet && maxBodyBytes > 0 {
-		req.Header.Set("Range", "bytes=0-"+strconv.FormatInt(maxBodyBytes-1, 10))
+	if method == http.MethodGet {
+		req.Header.Set("Accept-Encoding", "identity")
+		if maxBodyBytes > 0 {
+			req.Header.Set("Range", "bytes=0-"+strconv.FormatInt(maxBodyBytes-1, 10))
+		}
 	}
 	resp, err := client.Do(req)
 	if err != nil {
