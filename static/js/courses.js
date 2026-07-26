@@ -1617,8 +1617,12 @@
         dom.filtersButton.addEventListener("click", openFilters);
         dom.filtersClose.addEventListener("click", closeFilters);
         dom.applyFilters.addEventListener("click", closeFilters);
-        document.addEventListener("pointerdown", (event) => {
-            if (isDesktop() || !dom.filtersDialog.open) {
+        dom.filtersDialog.addEventListener("click", (event) => {
+            if (
+                isDesktop()
+                || !dom.filtersDialog.open
+                || event.target !== dom.filtersDialog
+            ) {
                 return;
             }
 
@@ -1628,6 +1632,7 @@
                 || event.clientY < bounds.top
                 || event.clientY > bounds.bottom;
             if (outsidePanel) {
+                event.preventDefault();
                 closeFilters();
             }
         });
