@@ -186,6 +186,108 @@ window.addEventListener("DOMContentLoaded", async () => {
     await waitForRequests(6);
     expectRequest(5, "", "year", "asc");
 
+    if (window.innerWidth < 960) {
+      const filtersButton = document.querySelector("#filters-button");
+      const filtersDialog = document.querySelector("#filters-dialog");
+      const detailDialog = document.querySelector("#detail-dialog");
+      const resultButton = document.querySelector(".result-select");
+      const applyFilters = document.querySelector("#apply-filters");
+      const providerSelect = document.querySelector("#provider-select");
+      const selectedBefore = resultButton.getAttribute("aria-current");
+      let resultClicks = 0;
+      resultButton.addEventListener("click", () => {
+        resultClicks += 1;
+      });
+
+      if (detailDialog.open) detailDialog.close();
+      filtersButton.click();
+      await waitFor(() => filtersDialog.open, "filters dialog");
+
+      const dialogBounds = filtersDialog.getBoundingClientRect();
+      const resultBounds = resultButton.getBoundingClientRect();
+      const outsideX = (resultBounds.left + resultBounds.right) / 2;
+      const outsideY = (resultBounds.top + resultBounds.bottom) / 2;
+      expect(
+        outsideX < dialogBounds.left
+          || outsideX > dialogBounds.right
+          || outsideY < dialogBounds.top
+          || outsideY > dialogBounds.bottom,
+        "result center was not outside the filters panel",
+      );
+      const outsidePointerDown = new PointerEvent("pointerdown", {
+        bubbles: true,
+        cancelable: true,
+        clientX: outsideX,
+        clientY: outsideY,
+        pointerId: 1,
+        pointerType: "touch",
+        isPrimary: true,
+      });
+      filtersDialog.dispatchEvent(outsidePointerDown);
+      const openBeforeClick = filtersDialog.open;
+      const clickTarget = openBeforeClick ? filtersDialog : resultButton;
+      const outsideClick = new PointerEvent("click", {
+        bubbles: true,
+        cancelable: true,
+        clientX: outsideX,
+        clientY: outsideY,
+        pointerId: 1,
+        pointerType: "touch",
+        isPrimary: true,
+      });
+      clickTarget.dispatchEvent(outsideClick);
+
+      expect(resultClicks === 0, "outside pointer sequence clicked a result");
+      expect(!detailDialog.open, "outside pointer sequence opened detail dialog");
+      expect(openBeforeClick, "filters closed before the outside click");
+      expect(!outsidePointerDown.defaultPrevented, "outside pointerdown was consumed");
+      expect(outsideClick.defaultPrevented, "outside click was not consumed");
+      expect(!filtersDialog.open, "outside click did not close filters");
+      expect(
+        resultButton.getAttribute("aria-current") === selectedBefore,
+        "outside pointer sequence changed the selected course",
+      );
+      expect(document.activeElement === filtersButton, "focus did not return to filters button");
+
+      filtersButton.click();
+      await waitFor(() => filtersDialog.open, "reopened filters dialog");
+      const insideBounds = filtersDialog.getBoundingClientRect();
+      const inside = new PointerEvent("pointerdown", {
+        bubbles: true,
+        cancelable: true,
+        clientX: insideBounds.left + 20,
+        clientY: insideBounds.top + 20,
+        pointerId: 2,
+        pointerType: "touch",
+        isPrimary: true,
+      });
+      providerSelect.dispatchEvent(inside);
+      expect(!inside.defaultPrevented, "inside pointerdown was consumed");
+      expect(filtersDialog.open, "inside pointerdown closed filters");
+
+      const insideClick = new PointerEvent("click", {
+        bubbles: true,
+        cancelable: true,
+        clientX: 0,
+        clientY: 0,
+        pointerId: 2,
+        pointerType: "touch",
+        isPrimary: true,
+      });
+      providerSelect.dispatchEvent(insideClick);
+      expect(!insideClick.defaultPrevented, "inside click was consumed");
+      expect(filtersDialog.open, "inside click closed filters");
+
+      let applyDefaultPrevented;
+      applyFilters.addEventListener("click", (event) => {
+        applyDefaultPrevented = event.defaultPrevented;
+      }, { once: true });
+      applyFilters.click();
+      expect(applyDefaultPrevented === false, "apply click was consumed before its handler");
+      expect(!filtersDialog.open, "apply button did not close filters");
+      expect(document.activeElement === filtersButton, "apply did not return focus");
+    }
+
     await fetch("/__result?status=PASS");
   } catch (error) {
     await fetch("/__result?status=FAIL&message=" + encodeURIComponent(error.message));
@@ -227,6 +329,13 @@ async function startServer() {
       response.end(body);
       return;
     }
+    if (requestURL.pathname === "/css/courses.css") {
+      readFile(path.join(repoRoot, "static", "css", "courses.css")).then(function (body) {
+        response.writeHead(200, { "content-type": "text/css; charset=utf-8" });
+        response.end(body);
+      });
+      return;
+    }
     if (requestURL.pathname === "/js/courses-search-worker.js") {
       response.writeHead(200, { "content-type": "text/javascript; charset=utf-8" });
       response.end(fakeWorker);
@@ -248,7 +357,7 @@ async function startServer() {
   return { server, result };
 }
 
-function runChrome(url, profilePath, width) {
+function runChrome(url, profilePath, width, height) {
   return spawn(
     chromePath,
     [
@@ -259,14 +368,14 @@ function runChrome(url, profilePath, width) {
       "--no-first-run",
       "--no-default-browser-check",
       "--user-data-dir=" + profilePath,
-      "--window-size=" + width + ",900",
+      "--window-size=" + width + "," + height,
       url,
     ],
     { stdio: "ignore" },
   );
 }
 
-async function runViewport(width) {
+async function runViewport(width, height) {
   const { server, result } = await startServer();
   const profilePath = await mkdtemp(path.join(os.tmpdir(), "courses-sort-chrome-"));
   let chrome;
@@ -277,6 +386,7 @@ async function runViewport(width) {
       "http://127.0.0.1:" + address.port + "/__courses-sort-test",
       profilePath,
       width,
+      height,
     );
     const browserResult = await Promise.race([
       result,
@@ -295,6 +405,6 @@ async function runViewport(width) {
 }
 
 test("catalog sort defaults to newest and preserves explicit choices", { timeout: 45000 }, async (t) => {
-  await t.test("desktop", () => runViewport(1440));
-  await t.test("mobile", () => runViewport(800));
+  await t.test("desktop", () => runViewport(1440, 900));
+  await t.test("mobile 390x844", () => runViewport(390, 844));
 });
