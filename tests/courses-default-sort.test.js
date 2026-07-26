@@ -1,3 +1,4 @@
+/* jshint esversion: 6, node: true */
 const assert = require("node:assert/strict");
 const { spawn } = require("node:child_process");
 const { mkdtemp, readFile, rm } = require("node:fs/promises");
@@ -298,6 +299,7 @@ window.addEventListener("DOMContentLoaded", async () => {
 
 async function startServer() {
   let resolveResult;
+  let workerVersion = null;
   const result = new Promise((resolve) => {
     resolveResult = resolve;
   });
@@ -305,7 +307,9 @@ async function startServer() {
     path.join(repoRoot, "static", "templates", "courses.html"),
     "utf8",
   );
-  const page = template.replace("</body>", testDriver + "\n</body>");
+  const page = template
+    .replaceAll("{{.AssetVersion}}", "test-asset-version")
+    .replace("</body>", testDriver + "\n</body>");
 
   const server = http.createServer(async (request, response) => {
     const requestURL = new URL(request.url, "http://127.0.0.1");
@@ -320,6 +324,7 @@ async function startServer() {
       resolveResult({
         status: requestURL.searchParams.get("status"),
         message: requestURL.searchParams.get("message"),
+        workerVersion,
       });
       return;
     }
@@ -337,6 +342,7 @@ async function startServer() {
       return;
     }
     if (requestURL.pathname === "/js/courses-search-worker.js") {
+      workerVersion = requestURL.searchParams.get("v");
       response.writeHead(200, { "content-type": "text/javascript; charset=utf-8" });
       response.end(fakeWorker);
       return;
@@ -395,6 +401,7 @@ async function runViewport(width, height) {
       }),
     ]);
     assert.equal(browserResult.status, "PASS", browserResult.message);
+    assert.equal(browserResult.workerVersion, "test-asset-version");
   } finally {
     clearTimeout(timeout);
     if (chrome && chrome.exitCode == null) chrome.kill("SIGKILL");

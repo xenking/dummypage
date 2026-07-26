@@ -25,6 +25,16 @@ jobs:
         go-version-file: go.mod
         cache: true
 
+    - name: Reject tracked Fiber compression cache
+      shell: bash
+      run: |
+        tracked="$(git ls-files -- '*.fiber.*')"
+        if [[ -n "$tracked" ]]; then
+          echo "Generated Fiber compression cache must not be tracked:"
+          echo "$tracked"
+          exit 1
+        fi
+
     - name: Run Go tests
       run: go test -count=1 ./...
 

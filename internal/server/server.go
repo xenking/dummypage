@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
 	"strings"
 	"time"
 
@@ -23,8 +24,9 @@ var appVersion string
 
 type Server struct {
 	*fiber.App
-	addr string
-	cfg  Config
+	addr         string
+	cfg          Config
+	assetVersion string
 }
 
 type Config struct {
@@ -64,8 +66,9 @@ func newServer(cfg Config) *Server {
 			StreamRequestBody: false,
 			DisableKeepalive:  false,
 		}),
-		addr: cfg.Addr,
-		cfg:  cfg,
+		addr:         cfg.Addr,
+		cfg:          cfg,
+		assetVersion: rand.Text(),
 	}
 }
 
@@ -126,7 +129,7 @@ func (s *Server) setupMiddlewares(cfg Config, logger *log.Logger) *Server {
 
 func (s *Server) registerRoutes() *Server {
 	s.Get("/", handleIndex())
-	s.Get("/courses", handleCourses())
+	s.Get("/courses", handleCourses(s.assetVersion))
 	s.Get("/courses/api/meta", limiter.New(limiter.Config{
 		Max:               60,
 		Expiration:        1 * time.Minute,
@@ -144,9 +147,11 @@ func (s *Server) registerRoutes() *Server {
 	return s
 }
 
-func handleCourses() fiber.Handler {
+func handleCourses(assetVersion string) fiber.Handler {
 	return func(ctx fiber.Ctx) error {
-		if err := ctx.Status(fiber.StatusOK).Render("courses", fiber.Map{}); err != nil {
+		if err := ctx.Status(fiber.StatusOK).Render("courses", fiber.Map{
+			"AssetVersion": assetVersion,
+		}); err != nil {
 			return ctx.Status(fiber.StatusInternalServerError).SendString("Internal Server Error")
 		}
 		return nil

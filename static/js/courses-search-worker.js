@@ -1,6 +1,6 @@
 "use strict";
 
-importScripts("./vendor/minisearch.min.js");
+importScripts("./vendor/minisearch.min.js" + self.location.search);
 
 const DB_NAME = "dummypage-courses";
 const DB_VERSION = 1;
