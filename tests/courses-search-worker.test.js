@@ -90,14 +90,14 @@ const catalog = {
   source_schema: "fixture/v1",
   exported_at: "2026-07-26T00:00:00Z",
   source: { title: "Fixture" },
-  stats: { entries: 4, links: 4, passwords: 1 },
+  stats: { entries: 5, links: 5, passwords: 1 },
   categories: [
-    { id: "it", label: "IT", count: 2 },
+    { id: "it", label: "IT", count: 3 },
     { id: "design", label: "Design", count: 1 },
     { id: "service", label: "Service", count: 1, hidden: true },
   ],
   formats: [
-    { id: "video", label: "Video", count: 3 },
+    { id: "video", label: "Video", count: 4 },
     { id: "book", label: "Book", count: 1 },
   ],
   entries: [
@@ -249,6 +249,44 @@ const catalog = {
         availability: "external_link",
       }],
     },
+    {
+      id: "course-5",
+      title: "Аналитик данных на Python",
+      title_original: "Analitik dannyih na Python",
+      author: "Skillbox",
+      year: 2021,
+      year_range: null,
+      first_added_at: "2026-01-01T00:00:00Z",
+      last_added_at: "2026-01-01T00:00:00Z",
+      origins: ["text_block"],
+      availability: ["download_link"],
+      categories: ["it"],
+      primary_category: "it",
+      formats: ["video"],
+      primary_format: "video",
+      format_sources: ["title"],
+      links: [{
+        url: "https://gamma.test/e",
+        host: "gamma.test",
+        provider: "gamma",
+        kind: "file_host",
+        role: "primary",
+        primary: true,
+        label: null,
+      }],
+      passwords: [],
+      notes: [],
+      sources: [{
+        entry_id: "source-5",
+        message_id: "fixture:5",
+        telegram_message_id: 5,
+        message_url: "https://telegram.test/5",
+        source_message_ids: ["fixture:5"],
+        added_at: "2026-01-01T00:00:00Z",
+        origin: "text_block",
+        availability: "download_link",
+      }],
+    },
   ],
 };
 
@@ -277,9 +315,9 @@ const catalog = {
   expect(imported.ok === true, "import failed: " + JSON.stringify(imported.error || null));
   expect(imported.type === "import", "import response type missing");
   expect(imported.data.cached === true, "import did not report cached");
-  expect(imported.data.meta.entry_count === 3, "service entry counted as visible");
+  expect(imported.data.meta.entry_count === 4, "service entry counted as visible");
   expect(imported.data.facets.categories.every((item) => item.value !== "service"), "service facet leaked");
-  expect(imported.data.facets.formats.find((item) => item.value === "video").count === 2, "format facet incorrect");
+  expect(imported.data.facets.formats.find((item) => item.value === "video").count === 3, "format facet incorrect");
   expect(imported.data.facets.hasPassword.withPassword === 1, "password facet incorrect");
 
   const normalized = await client.request("search", {
@@ -290,6 +328,34 @@ const catalog = {
     limit: 10,
   });
   expect(normalized.ok === true && normalized.data.entries[0].id === "course-1", "NFC/ё/zero-width normalization failed");
+
+  const originalRussian = await client.request("search", {
+    query: "аналитик данных python",
+    filters: emptyFilters,
+    sort: { field: "relevance", direction: "desc" },
+    offset: 0,
+    limit: 10,
+  });
+  expect(
+    originalRussian.ok === true
+      && originalRussian.data.total === 1
+      && originalRussian.data.entries[0].id === "course-5",
+    "normalized Russian title search failed",
+  );
+
+  const originalLatin = await client.request("search", {
+    query: "analitik dannyih python",
+    filters: emptyFilters,
+    sort: { field: "relevance", direction: "desc" },
+    offset: 0,
+    limit: 10,
+  });
+  expect(
+    originalLatin.ok === true
+      && originalLatin.data.total === 1
+      && originalLatin.data.entries[0].id === "course-5",
+    "Latin title_original search failed",
+  );
 
   for (const query of [
     "source entry marker 330",
@@ -367,7 +433,7 @@ const catalog = {
     offset: 0,
     limit: 2,
   });
-  expect(sorted.data.total === 3, "service entry appeared in wildcard results");
+  expect(sorted.data.total === 4, "service entry appeared in wildcard results");
   expect(sorted.data.entries.map((entry) => entry.id).join(",") === "course-1,course-2", "year sort or pagination failed");
 
   const addedAtSorted = await client.request("search", {
@@ -403,6 +469,21 @@ const catalog = {
     version: "fixture-v2",
   });
   expect(invalidImport.ok === false && invalidImport.error.code === "INVALID_CATALOG", "duplicate IDs accepted");
+
+  const invalidOriginalTitle = {
+    ...catalog,
+    entries: [{ ...catalog.entries[0], title_original: 42 }],
+  };
+  const invalidOriginalImport = await client.request("import", {
+    catalog: invalidOriginalTitle,
+    meta: { version: "fixture-v2-bad-title-original" },
+    version: "fixture-v2-bad-title-original",
+  });
+  expect(
+    invalidOriginalImport.ok === false
+      && invalidOriginalImport.error.code === "INVALID_CATALOG",
+    "non-string title_original accepted",
+  );
 
   const afterInvalid = await client.request("search", {
     query: "елка",

@@ -111,13 +111,14 @@ type Catalog struct {
 }
 
 type CatalogStats struct {
-	Messages        int `json:"messages"`
-	SourceEntries   int `json:"source_entries"`
-	SourceLinks     int `json:"source_links"`
-	SourcePasswords int `json:"source_passwords"`
-	Entries         int `json:"entries"`
-	Links           int `json:"links"`
-	Passwords       int `json:"passwords"`
+	Messages         int `json:"messages"`
+	SourceEntries    int `json:"source_entries"`
+	SourceLinks      int `json:"source_links"`
+	SourcePasswords  int `json:"source_passwords"`
+	Entries          int `json:"entries"`
+	Links            int `json:"links"`
+	Passwords        int `json:"passwords"`
+	NormalizedTitles int `json:"normalized_titles"`
 }
 
 type CategoryMetadata struct {
@@ -136,6 +137,7 @@ type FormatMetadata struct {
 type CatalogEntry struct {
 	ID              string          `json:"id"`
 	Title           string          `json:"title"`
+	TitleOriginal   *string         `json:"title_original,omitempty"`
 	Author          *string         `json:"author"`
 	Year            *int            `json:"year"`
 	YearRange       *yearRange      `json:"year_range"`
@@ -510,8 +512,6 @@ func buildGzipFromSource(source sourceExport, output io.Writer, torrentDir strin
 			links = mergeLinks(links, []CatalogLink{torrentLink})
 		}
 
-		categories := classify(entry)
-		formats, formatSource := classifyFormats(entry, message)
 		clusterRoot := clusters.find(index)
 		identityKey := canonicalIdentityKeys[clusterRoot]
 		courseID := courseID(identityKey)
@@ -520,9 +520,21 @@ func buildGzipFromSource(source sourceExport, output io.Writer, torrentDir strin
 		}
 		entryKeysByID[courseID] = identityKey
 
+		sourceTitle := cleanCourseTitle(entry.Title)
+		displayTitle, normalized := normalizeCourseTitle(sourceTitle)
+		var titleOriginal *string
+		if normalized {
+			titleOriginal = &sourceTitle
+		}
+		classificationEntry := entry
+		classificationEntry.Title = displayTitle
+		categories := classify(classificationEntry)
+		formats, formatSource := classifyFormats(classificationEntry, message)
+
 		candidate := CatalogEntry{
 			ID:              courseID,
-			Title:           cleanCourseTitle(entry.Title),
+			Title:           displayTitle,
+			TitleOriginal:   titleOriginal,
 			Author:          cleanOptionalString(entry.Credit.Author),
 			Year:            entry.Year,
 			YearRange:       entry.YearRange,
@@ -581,6 +593,7 @@ func recomputeCatalogStatsAndFacets(catalog *Catalog) {
 	catalog.Stats.Entries = len(catalog.Entries)
 	catalog.Stats.Links = 0
 	catalog.Stats.Passwords = 0
+	catalog.Stats.NormalizedTitles = 0
 	catalog.Categories = catalog.Categories[:0]
 	catalog.Formats = catalog.Formats[:0]
 	categoryCounts := make(map[string]int, len(categoryDefinitions))
@@ -588,6 +601,9 @@ func recomputeCatalogStatsAndFacets(catalog *Catalog) {
 	for _, entry := range catalog.Entries {
 		catalog.Stats.Links += len(entry.Links)
 		catalog.Stats.Passwords += len(entry.Passwords)
+		if entry.TitleOriginal != nil {
+			catalog.Stats.NormalizedTitles++
+		}
 		for _, category := range entry.Categories {
 			categoryCounts[category]++
 		}

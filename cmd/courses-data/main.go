@@ -154,10 +154,11 @@ func buildFiles(inputPaths []string, outputPath, torrentDir string) error {
 	}
 
 	fmt.Printf(
-		"built %s: %d courses from %d source entries, %d links, %d passwords\n",
+		"built %s: %d courses from %d source entries, %d normalized titles, %d links, %d passwords\n",
 		outputPath,
 		stats.Entries,
 		stats.SourceEntries,
+		stats.NormalizedTitles,
 		stats.Links,
 		stats.Passwords,
 	)

@@ -229,6 +229,73 @@ func TestBuildGzipPreservesMultipleLinksAndPasswords(t *testing.T) {
 	}
 }
 
+func TestBuildGzipNormalizesTransliteratedTitleWithoutChangingIdentity(t *testing.T) {
+	entry := validSourceEntry()
+	entry.Title = "Analitik dannyih na Python"
+	entry.Credit.Author = stringPointer("Skillbox")
+	entry.RawBlock = "[Skillbox] Analitik dannyih na Python"
+	source := validSource(t, entry)
+	expectedID := courseID(courseIdentityKey(source.Source.ChannelID, entry))
+
+	var output bytes.Buffer
+	stats, err := BuildGzip(sourceReader(t, source), &output)
+	if err != nil {
+		t.Fatalf("build catalog: %v", err)
+	}
+	if stats.NormalizedTitles != 1 {
+		t.Fatalf("normalized title count = %d, want 1", stats.NormalizedTitles)
+	}
+
+	catalog := decodeBuiltCatalog(t, &output)
+	if catalog.Stats.NormalizedTitles != 1 {
+		t.Fatalf("catalog normalized title count = %d, want 1", catalog.Stats.NormalizedTitles)
+	}
+	got := catalog.Entries[0]
+	if got.ID != expectedID {
+		t.Fatalf("course ID = %q, want raw-title identity %q", got.ID, expectedID)
+	}
+	if got.Title != "Аналитик данных на Python" {
+		t.Fatalf("title = %q, want normalized Russian title", got.Title)
+	}
+	if got.TitleOriginal == nil || *got.TitleOriginal != "Analitik dannyih na Python" {
+		t.Fatalf("title_original = %v, want raw title", got.TitleOriginal)
+	}
+	if !slices.Contains(got.Categories, "data_ai") {
+		t.Fatalf("categories = %v, want normalized title to classify as data_ai", got.Categories)
+	}
+}
+
+func TestBuildGzipCountsMergedNormalizedTitleOnce(t *testing.T) {
+	first := validSourceEntry()
+	first.Title = "Analitik dannyih na Python"
+	first.Credit.Author = stringPointer("Skillbox")
+	first.RawBlock = "[Skillbox] Analitik dannyih na Python"
+
+	second := first
+	second.EntryID = "1:2:0"
+	second.MessageID = "1:2"
+	second.SourceMessageIDs = []string{"1:2"}
+	second.AddedAt = "2024-02-01T00:00:00Z"
+
+	source := validSource(t, first)
+	source.Messages = append(source.Messages, sourceMessage{
+		MessageID:         "1:2",
+		TelegramMessageID: 2,
+		URL:               "https://messages.example.test/source/2",
+	})
+	source.CatalogEntries = []sourceEntry{first, second}
+	setSourceCounts(&source)
+
+	var output bytes.Buffer
+	stats, err := BuildGzip(sourceReader(t, source), &output)
+	if err != nil {
+		t.Fatalf("build catalog: %v", err)
+	}
+	if stats.Entries != 1 || stats.NormalizedTitles != 1 {
+		t.Fatalf("stats = %+v, want one merged normalized course", stats)
+	}
+}
+
 func TestBuildGzipFiltersBareDomainTitleEntityLinksWithRealProvenanceShape(t *testing.T) {
 	title := "Example Blog: Practical Writing"
 	entry := validSourceEntry()
