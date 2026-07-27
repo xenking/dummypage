@@ -142,6 +142,7 @@ func TestLinkEnrichmentCachePutAndWriteRevalidatePrivateSafeInvariants(t *testin
 		"file:/private/path",
 		"urn:secret",
 		"<div>raw html</div>",
+		"bad\u0001value",
 	} {
 		if err := cache.PutExtracted(hash, LinkContent{Name: name}, time.Now()); err == nil {
 			t.Fatalf("PutExtracted(%q) error = nil", name)

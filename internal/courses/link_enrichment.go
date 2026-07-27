@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -439,6 +440,24 @@ func linkEnrichmentString(root map[string]any, fieldPath string) (string, error)
 	text, ok := value.(string)
 	if !ok {
 		return "", fmt.Errorf("embedded field %q is not a string", fieldPath)
+	}
+	if containsControlCharacter(text) {
+		controlStripped := strings.Map(func(value rune) rune {
+			if unicode.IsControl(value) {
+				return -1
+			}
+			return value
+		}, text)
+		lower := strings.ToLower(strings.TrimSpace(controlStripped))
+		if strings.Contains(lower, "://") || hasLocatorSchemePrefix(lower) {
+			return "", fmt.Errorf("embedded field %q contains non-metadata content", fieldPath)
+		}
+		text = strings.Map(func(value rune) rune {
+			if unicode.IsControl(value) {
+				return ' '
+			}
+			return value
+		}, text)
 	}
 	text = strings.TrimSpace(text)
 	if len(text) > maxLinkContentStringBytes {
