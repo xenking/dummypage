@@ -61,8 +61,8 @@ func TestTitleNormalizerTransliteratesGenericTitles(t *testing.T) {
 		},
 		{
 			name:  "archive file identifier",
-			input: "archive_5881340_RUS_rutracker",
-			want:  "archive_5881340_RUS_rutracker",
+			input: "fixture_2468135_LANG_bundle",
+			want:  "fixture_2468135_LANG_bundle",
 		},
 		{
 			name:  "already Cyrillic",
@@ -153,8 +153,8 @@ func TestTitleNormalizerProtectsNonTransliterationTokens(t *testing.T) {
 		},
 		{
 			name:  "file identifier",
-			input: "Kurs dlya archive_5881340_RUS_rutracker s nulya",
-			want:  "Курс для archive_5881340_RUS_rutracker с нуля",
+			input: "Kurs dlya fixture_2468135_LANG_bundle s nulya",
+			want:  "Курс для fixture_2468135_LANG_bundle с нуля",
 		},
 		{
 			name:  "digit-containing token",
@@ -430,14 +430,14 @@ func TestTitleNormalizerStructuralCleanup(t *testing.T) {
 		},
 		{
 			name:    "technical file identifier stays intact",
-			input:   "Open archive_5881340_RUS today",
-			want:    "Open archive_5881340_RUS today",
+			input:   "Open fixture_2468135_LANG today",
+			want:    "Open fixture_2468135_LANG today",
 			changed: false,
 		},
 		{
 			name:    "whole technical-looking slug is cleaned",
-			input:   "Archive_5881340_RUS",
-			want:    "Archive 5881340 RUS",
+			input:   "Fixture_2468135_LANG",
+			want:    "Fixture 2468135 LANG",
 			changed: true,
 		},
 		{
