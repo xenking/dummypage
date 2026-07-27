@@ -6,7 +6,7 @@
     const SEARCH_DELAY_MS = 90;
     const RPC_TIMEOUT_MS = 120_000;
     const MOBILE_BREAKPOINT = 1120;
-    const CONTENT_ITEM_PREVIEW_LIMIT = 3;
+    const CONTENT_ITEMS_OPEN_LIMIT = 8;
     const ALLOWED_PROTOCOLS = new Set(["http:", "https:", "magnet:"]);
     const assetVersion = new URL(document.currentScript.src).searchParams.get("v");
     const MATERIAL_TYPE_LABELS = Object.freeze({
@@ -264,19 +264,11 @@
         return `${russianNumber(number)} ${form}`;
     }
 
-    function formatLinkContentSummary(content) {
+    function formatLinkContentFacts(content) {
         if (!content || typeof content !== "object" || Array.isArray(content)) {
-            return "";
+            return [];
         }
         const parts = [];
-        const name = typeof content.name === "string" && content.name
-            ? content.name
-            : typeof content.kind === "string"
-                ? content.kind
-                : "";
-        if (name) {
-            parts.push(name);
-        }
         if (Number.isSafeInteger(content.size_bytes) && content.size_bytes >= 0) {
             parts.push(formatBytes(content.size_bytes));
         }
@@ -303,18 +295,7 @@
         if (materialLabels.length) {
             parts.push(materialLabels.join(", "));
         }
-
-        const itemNames = Array.isArray(content.items)
-            ? content.items
-                .map((item) => typeof item?.name === "string" ? item.name : "")
-                .filter(Boolean)
-            : [];
-        if (itemNames.length) {
-            const preview = itemNames.slice(0, CONTENT_ITEM_PREVIEW_LIMIT).join(", ");
-            const remaining = itemNames.length - CONTENT_ITEM_PREVIEW_LIMIT;
-            parts.push(remaining > 0 ? `${preview} +${remaining}` : preview);
-        }
-        return parts.join(" · ");
+        return parts;
     }
 
     function formatDate(value, includeTime = false) {
@@ -1041,16 +1022,6 @@
             value.title = link.safeURL;
             const copy = createElement("div", "link-copy");
             copy.append(value);
-            const contentSummary = formatLinkContentSummary(link.content);
-            if (contentSummary) {
-                const summary = createElement(
-                    "p",
-                    "link-value link-content-summary",
-                    contentSummary,
-                );
-                summary.title = contentSummary;
-                copy.append(summary);
-            }
             const actions = createElement("div", "row-actions");
             const open = createElement("button", "button button--quiet", "Открыть");
             open.type = "button";
@@ -1064,10 +1035,72 @@
             ));
             actions.append(open, copyButton);
             item.append(copy, actions);
+            const content = renderLinkContent(link.content);
+            if (content) {
+                item.append(content);
+            }
             list.append(item);
         }
         section.append(list);
         return section;
+    }
+
+    function renderLinkContent(content) {
+        if (!content || typeof content !== "object" || Array.isArray(content)) {
+            return null;
+        }
+
+        const name = typeof content.name === "string" ? content.name.trim() : "";
+        const facts = formatLinkContentFacts(content);
+        const items = Array.isArray(content.items)
+            ? content.items.filter((item) =>
+                item &&
+                typeof item === "object" &&
+                !Array.isArray(item) &&
+                typeof item.name === "string" &&
+                item.name.trim(),
+            )
+            : [];
+        if (!name && !facts.length && !items.length) {
+            return null;
+        }
+
+        const wrapper = createElement("div", "link-content");
+        if (name) {
+            wrapper.append(createElement("p", "link-content-name", name));
+        }
+        if (facts.length) {
+            wrapper.append(createElement("p", "link-content-facts", facts.join(" · ")));
+        }
+        if (items.length) {
+            const details = createElement("details", "link-content-items");
+            details.open = items.length <= CONTENT_ITEMS_OPEN_LIMIT;
+            details.append(createElement(
+                "summary",
+                "link-content-items-toggle",
+                `Содержимое (${russianNumber(items.length)})`,
+            ));
+            const list = createElement("ul", "link-content-items-list");
+            for (const contentItem of items) {
+                const row = createElement("li", "link-content-item");
+                row.append(createElement(
+                    "span",
+                    "link-content-item-name",
+                    contentItem.name.trim(),
+                ));
+                const meta = Number.isSafeInteger(contentItem.size_bytes) &&
+                    contentItem.size_bytes >= 0
+                    ? formatBytes(contentItem.size_bytes)
+                    : contentItem.kind === "folder"
+                        ? "папка"
+                        : "файл";
+                row.append(createElement("span", "link-content-item-meta", meta));
+                list.append(row);
+            }
+            details.append(list);
+            wrapper.append(details);
+        }
+        return wrapper;
     }
 
     function renderPasswordsSection(passwords) {

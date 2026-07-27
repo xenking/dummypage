@@ -90,6 +90,7 @@ button:focus-visible,
 input:focus-visible,
 select:focus-visible,
 a:focus-visible,
+.link-content-items-toggle:focus-visible,
 dialog:focus-visible {
     outline: 2px solid var(--focus);
     outline-offset: 2px;
@@ -927,6 +928,14 @@ select {
     border-block-end: 1px solid var(--border-soft);
 }
 
+.link-row {
+    align-items: start;
+}
+
+.link-copy {
+    min-width: 0;
+}
+
 .link-value,
 .password-value {
     min-width: 0;
@@ -935,6 +944,78 @@ select {
     font-size: 0.8125rem;
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.link-content {
+    min-width: 0;
+    display: grid;
+    grid-column: 1 / -1;
+    gap: 5px;
+    padding-block: 5px 7px;
+}
+
+.link-content-name,
+.link-content-facts {
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+
+.link-content-name {
+    color: var(--text);
+    font-size: 0.8125rem;
+    font-weight: 600;
+    line-height: 1.4;
+}
+
+.link-content-facts {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    line-height: 1.4;
+}
+
+.link-content-items {
+    min-width: 0;
+    margin-block-start: 2px;
+}
+
+.link-content-items-toggle {
+    width: fit-content;
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    padding-block: 4px;
+    color: var(--text);
+    cursor: pointer;
+    font-size: 0.8125rem;
+    font-weight: 600;
+}
+
+.link-content-items-list {
+    display: grid;
+    margin: 2px 0 0;
+    padding: 0;
+    list-style: none;
+}
+
+.link-content-item {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    padding-block: 4px;
+    border-block-start: 1px solid var(--border-soft);
+    font-size: 0.75rem;
+    line-height: 1.4;
+}
+
+.link-content-item-name {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.link-content-item-meta {
+    color: var(--text-muted);
     white-space: nowrap;
 }
 

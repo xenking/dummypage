@@ -145,21 +145,44 @@ window.addEventListener("DOMContentLoaded", async () => {
     await waitFor(() => document.querySelector(".result-select"), "initial result");
     document.querySelector(".result-select").click();
     await waitFor(
-      () => document.querySelectorAll(".link-content-summary").length === 2,
-      "content summaries",
+      () => document.querySelectorAll(".link-content").length === 2,
+      "structured link content",
     );
-    const summaries = [
-      document.querySelector("#desktop-detail .link-content-summary"),
-      document.querySelector("#mobile-detail .link-content-summary"),
+    const contents = [
+      document.querySelector("#desktop-detail .link-content"),
+      document.querySelector("#mobile-detail .link-content"),
     ];
-    const expectedSummary = "Курс <img src=x onerror=alert(1)> · 1,5 ГБ · 7 файлов · 2 папки · архив, видео · intro.mp4, урок 2.mkv, notes.pdf +2";
     expect(
-      summaries.every((summary) => summary && summary.textContent === expectedSummary),
-      "desktop/mobile content summaries differ or are incomplete",
+      contents.every(
+        (content) =>
+          content.querySelector(".link-content-name").textContent ===
+            "Курс <img src=x onerror=alert(1)>" &&
+          content.querySelector(".link-content-facts").textContent ===
+            "1,5 ГБ · 7 файлов · 2 папки · архив, видео" &&
+          content.querySelector(".link-content-items-toggle").textContent ===
+            "Содержимое (5)" &&
+          content.querySelectorAll(".link-content-item").length === 5,
+      ),
+      "desktop/mobile structured content differs or is incomplete",
     );
     expect(
-      summaries.every((summary) => summary.querySelector("img") === null),
+      contents.every(
+        (content) =>
+          content.querySelector(".link-content-item-name").textContent === "intro.mp4" &&
+          content.querySelector(".link-content-item-meta").textContent === "1 Б",
+      ),
+      "content item names or sizes were not rendered",
+    );
+    expect(
+      contents.every((content) => content.querySelector("img") === null),
       "content metadata was interpreted as HTML",
+    );
+    expect(
+      contents.every(
+        (content) =>
+          getComputedStyle(content.querySelector(".link-content-name")).whiteSpace !== "nowrap",
+      ),
+      "content name is still forced into a clipped single line",
     );
 
     search.value = "python";
