@@ -181,7 +181,7 @@ func TestEnrichCatalogLinksRefreshesFreshCandidates(t *testing.T) {
 	assertEnrichmentName(t, cache, rawURL, "new")
 }
 
-func TestEnrichCatalogLinksDowngradesInvalidExtractedContentAndKeepsCache(t *testing.T) {
+func TestEnrichCatalogLinksNormalizesControlsAndKeepsCacheOnInvalidContent(t *testing.T) {
 	now := time.Date(2026, 7, 27, 0, 0, 0, 0, time.UTC)
 	policy := mustLinkEnrichmentPolicy(t, 10)
 	urls := struct {
@@ -230,8 +230,8 @@ func TestEnrichCatalogLinksDowngradesInvalidExtractedContentAndKeepsCache(t *tes
 	if stats != (LinkEnrichmentStats{
 		Candidates: 5,
 		Fetched:    5,
-		Extracted:  1,
-		Failed:     4,
+		Extracted:  2,
+		Failed:     3,
 	}) {
 		t.Fatalf("stats = %+v", stats)
 	}
@@ -241,7 +241,7 @@ func TestEnrichCatalogLinksDowngradesInvalidExtractedContentAndKeepsCache(t *tes
 	assertEnrichmentName(t, cache, urls.valid, "valid new")
 	assertEnrichmentName(t, cache, urls.locator, "locator old")
 	assertEnrichmentName(t, cache, urls.angle, "angle old")
-	assertEnrichmentName(t, cache, urls.control, "control old")
+	assertEnrichmentName(t, cache, urls.control, "bad value")
 	assertEnrichmentName(t, cache, urls.empty, "empty old")
 }
 

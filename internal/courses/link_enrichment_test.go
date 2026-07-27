@@ -68,6 +68,44 @@ func TestLoadLinkEnrichmentPolicyAndExtractEmbeddedObject(t *testing.T) {
 	}
 }
 
+func TestLinkEnrichmentExtractorNormalizesControlCharacters(t *testing.T) {
+	policy := mustLinkEnrichmentPolicy(t, 10)
+	body := []byte(`{"embeddedPayload":{
+		"name":"Example\u0085bundle",
+		"kind":"folder",
+		"list":[{"name":"Lesson\u008efile.mp4","kind":"file","size":1}]
+	}}`)
+
+	content, found, err := policy.Extract("assets.example.test", body)
+	if err != nil {
+		t.Fatalf("Extract() error = %v", err)
+	}
+	if !found {
+		t.Fatal("Extract() found = false, want true")
+	}
+	if content.Name != "Example bundle" {
+		t.Fatalf("content.Name = %q, want %q", content.Name, "Example bundle")
+	}
+	if len(content.Items) != 1 {
+		t.Fatalf("len(content.Items) = %d, want 1", len(content.Items))
+	}
+	if content.Items[0].Name != "Lesson file.mp4" {
+		t.Fatalf("content.Items[0].Name = %q, want %q", content.Items[0].Name, "Lesson file.mp4")
+	}
+	if err := validateCachedLinkContent(*content); err != nil {
+		t.Fatalf("validateCachedLinkContent() error = %v", err)
+	}
+
+	for _, body := range []string{
+		`{"embeddedPayload":{"name":"magnet\u0001:?xt=urn:btih:example"}}`,
+		`{"embeddedPayload":{"name":"https\u0001://assets.example.test/private"}}`,
+	} {
+		if _, _, err := policy.Extract("assets.example.test", []byte(body)); err == nil {
+			t.Fatalf("Extract(%q) error = nil", body)
+		}
+	}
+}
+
 func TestLinkEnrichmentExtractorHandlesEscapesAndMissingMarker(t *testing.T) {
 	policy := mustLinkEnrichmentPolicy(t, 10)
 	body := []byte(`<script>{"embeddedPayload":{"name":"A \"quoted\" {bundle}","kind":"folder","size":1,"count":{"files":0,"folders":0},"list":[]}}</script>`)
